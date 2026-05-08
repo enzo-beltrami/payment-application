@@ -1,0 +1,285 @@
+openapi: 3.1.0
+info:
+  title: OpenAPI definition
+  version: v0
+servers:
+- url: http://localhost:8080
+  description: Generated server url
+tags:
+- name: Webhooks
+  description: Register endpoints to receive `payment.created` events.
+- name: Payments
+  description: Create and retrieve payments. Card numbers are encrypted at rest and
+    never returned in full.
+paths:
+  /api/webhooks:
+    get:
+      tags:
+      - Webhooks
+      summary: List active webhook subscriptions
+      operationId: list
+      responses:
+        "200":
+          description: Active webhooks.
+          content:
+            '*/*':
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WebhookResponse"
+    post:
+      tags:
+      - Webhooks
+      summary: Register a webhook subscription
+      operationId: register
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterWebhookRequest"
+            examples:
+              register:
+                description: register
+                value:
+                  url: https://example.com/webhooks/payments
+        required: true
+      responses:
+        "201":
+          description: Webhook registered.
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/WebhookResponse"
+              examples:
+                registered:
+                  description: registered
+                  value:
+                    id: 550e8400-e29b-41d4-a716-446655440000
+                    url: https://example.com/webhooks/payments
+                    active: true
+                    createdAt: 2026-05-07T19:53:00Z
+        "400":
+          description: Invalid URL.
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/payments:
+    post:
+      tags:
+      - Payments
+      summary: Create a payment
+      description: "Validates the card number with the Mod 10 (Luhn) algorithm, encrypts\
+        \ it with AES-GCM, and persists the payment. After persistence every active\
+        \ webhook receives a `payment.created` event; delivery is asynchronous and\
+        \ resilient to receiver failures."
+      operationId: create
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePaymentRequest"
+            examples:
+              valid:
+                description: valid
+                value:
+                  firstName: Ada
+                  lastName: Lovelace
+                  zipCode: "10001"
+                  cardNumber: 4242 4242 4242 4242
+        required: true
+      responses:
+        "201":
+          description: Payment created.
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/PaymentResponse"
+              examples:
+                created:
+                  description: created
+                  value:
+                    id: f81d4fae-7dec-11d0-a765-00a0c91e6bf6
+                    firstName: Ada
+                    lastName: Lovelace
+                    zipCode: "10001"
+                    cardLast4: "4242"
+                    maskedCardNumber: '**** **** **** 4242'
+                    createdAt: 2026-05-07T19:53:00Z
+        "400":
+          description: Validation failure (missing field or invalid card number).
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalidCard:
+                  description: invalidCard
+                  value:
+                    error: invalid_card_number
+                    message: card number failed Mod 10 (Luhn) check
+                    fieldErrors: []
+  /api/payments/{id}:
+    get:
+      tags:
+      - Payments
+      summary: Get a payment by id
+      operationId: get
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          description: Payment found.
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/PaymentResponse"
+        "404":
+          description: No payment with that id.
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/webhooks/{id}:
+    delete:
+      tags:
+      - Webhooks
+      summary: Deactivate a webhook subscription
+      description: "Soft-delete: marks the subscription inactive. In-flight delivery\
+        \ retries continue to completion or final failure."
+      operationId: delete
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "204":
+          description: Deactivated.
+        "404":
+          description: No active webhook with that id.
+          content:
+            '*/*':
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    RegisterWebhookRequest:
+      type: object
+      description: Payload for registering a new webhook subscription.
+      properties:
+        url:
+          type: string
+          description: Absolute http or https URL that will receive POSTed payment
+            events.
+          example: https://example.com/webhooks/payments
+          minLength: 1
+      required:
+      - url
+    WebhookResponse:
+      type: object
+      description: A registered webhook subscription.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: 550e8400-e29b-41d4-a716-446655440000
+        url:
+          type: string
+          example: https://example.com/webhooks/payments
+        active:
+          type: boolean
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: 2026-05-07T19:53:00Z
+    ErrorResponse:
+      type: object
+      description: A machine-readable error.
+      properties:
+        error:
+          type: string
+          example: invalid_card_number
+        message:
+          type: string
+          example: card number failed Mod 10 (Luhn) check
+        fieldErrors:
+          type: array
+          description: "Field-level validation issues, when applicable."
+          items:
+            $ref: "#/components/schemas/FieldError"
+    FieldError:
+      type: object
+      properties:
+        field:
+          type: string
+          example: cardNumber
+        message:
+          type: string
+          example: must not be blank
+    CreatePaymentRequest:
+      type: object
+      description: Payload for creating a new payment.
+      properties:
+        firstName:
+          type: string
+          example: Ada
+          maxLength: 100
+          minLength: 0
+        lastName:
+          type: string
+          example: Lovelace
+          maxLength: 100
+          minLength: 0
+        zipCode:
+          type: string
+          example: "10001"
+          maxLength: 20
+          minLength: 0
+        cardNumber:
+          type: string
+          description: "Card number (13–19 digits, must pass Mod 10 / Luhn check).\
+            \ Spaces and hyphens are accepted."
+          example: "4242424242424242"
+          minLength: 1
+      required:
+      - cardNumber
+      - firstName
+      - lastName
+      - zipCode
+    PaymentResponse:
+      type: object
+      description: A persisted payment. The card number is never returned in full;
+        only the last 4 digits and a masked representation are exposed.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: f81d4fae-7dec-11d0-a765-00a0c91e6bf6
+        firstName:
+          type: string
+          example: Ada
+        lastName:
+          type: string
+          example: Lovelace
+        zipCode:
+          type: string
+          example: "10001"
+        cardLast4:
+          type: string
+          example: "4242"
+        maskedCardNumber:
+          type: string
+          example: '**** **** **** 4242'
+        createdAt:
+          type: string
+          format: date-time
+          example: 2026-05-07T19:53:00Z

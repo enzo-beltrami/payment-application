@@ -1,0 +1,9 @@
+I tried exporting the chat logs from claude code but the log doesn't show a lot of the intereactions
+that happens when claude makes you questions.
+
+Here is how developing this project went:
+- I gave claude intiial template from spring initializr and the spec
+- Clauded drafted an initial plan, i instructed it to use hexagonal architecture instead of the default MVC
+- I also instructed claude to use an outbox pattern table to execute the webhooks instead of relying on @Async calls for better resilience
+- After that it generated the first version and i refined some parts manually as well as did some more refinements on claude
+

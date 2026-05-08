@@ -1,0 +1,1623 @@
+ ▐▛███▜▌   Claude Code v2.1.133
+▝▜█████▛▘  Opus 4.7 · Claude Pro
+  ▘▘ ▝▝    ~/code/payment-application/payment-application
+
+❯ what are your thoughts on this application, does it have too much boilerplate 
+
+  Searched for 1 pattern, listed 1 directory (ctrl+o to expand)
+
+● Bash(wc -l /home/brenzo/code/payment-application/payment-application/src/main/
+      java/dev/brenzo/payment_application/**/*.java 2>/dev/null | tail -20; echo
+       "---"; find…)
+  ⎿  ---
+        15 /home/brenzo/code/payment-application/payment-application/src/ma
+     in/java/dev/brenzo/payment_application/adapter/out/time/SystemClock.ja
+     … +11 lines (ctrl+o to expand)
+
+  Read 5 files (ctrl+o to expand)
+
+● Yes, there's a fair amount of boilerplate — though most of it is intentional,
+  not accidental. It's a textbook hexagonal/ports-and-adapters Spring Boot app:
+  every collaborator goes through a port interface, and every JPA entity has a
+  hand-written domain mapper.
+
+  Where the cost shows up:
+  - Ports for trivial things. Clock, IdGenerator, EventSerializer each get their
+   own interface + adapter just to wrap Instant.now(), UUID.randomUUID(), and
+  Jackson. For testability you really only need Clock and IdGenerator;
+  EventSerializer could just be Jackson directly.
+  - Use-case interfaces with one method. CreatePaymentUseCase,
+  GetPaymentUseCase, RegisterWebhookUseCase, ListWebhooksUseCase,
+  DeleteWebhookUseCase, DispatchPendingWebhooksUseCase — six interfaces that
+  each have one impl. The controllers could depend on PaymentService /
+  WebhookService directly with no real loss.
+  - Repository adapter + JPA repository + JPA entity + domain class + manual 
+  mapping. Five files per aggregate. For a payment with five fields, that's a
+  lot of plumbing for what @Entity on the domain class (or a Spring Data
+  projection) could do in one.
+  - Manual @Bean wiring in ApplicationServiceConfig when the services could just
+   be @Service-annotated and constructor-injected. The config class is buying
+  you nothing here since the services already live in your package.
+
+  Where the structure is earning its keep:
+  - Payment domain object enforcing Luhn via CardNumber, with CardLast4 derived
+  — that's good, keeps validation out of the controller/JPA layer.
+  - WebhookDispatchService with backoff/max-attempts injected — testable in
+  isolation, worth the port.
+  - The in-memory test doubles (InMemoryPaymentRepository etc.) genuinely
+  benefit from the port abstraction.
+
+  Bottom line: the domain layer (Payment, CardNumber, CardValidator,
+  WebhookDelivery state machine) is well-shaped. The application/adapter
+  scaffolding is over-built for the size of the feature set — probably 30–40% of
+   the Java files would disappear if you collapsed single-impl ports and let
+  Spring Data + @Service carry more weight, without losing testability of the
+  parts that actually have logic.
+
+✻ Churned for 1m 6s
+
+❯ do the changes to reduce the boilerplate on application/adapter scaffolding   
+
+● Explore(Explore controller/service/test wiring)
+  ⎿  Done (66 tool uses · 60.6k tokens · 1m 17s)
+  (ctrl+o to expand)
+
+● Before I finalize the plan, I want to lock in scope — "reduce boilerplate" has
+   a few independent levers and they trade off differently against testability
+  and the hexagonal style.
+  ⎿  Tool use rejected
+
+● What would you like to clarify? I can rephrase any of the three questions or
+  break them up further. The first looks settled (drop all trivial single-impl
+  ports including Clock and IdGenerator) — happy to focus the discussion on the
+  persistence-layer choice and the wiring choice, or on whatever's unclear about
+   them.
+
+✻ Baked for 1m 57s
+
+❯ Show me what the code would look like if we remove repositoryadapters         
+
+  Read 3 files (ctrl+o to expand)
+
+● Here's a concrete sketch for the Payment aggregate. Same shape would apply to
+  the two webhook aggregates.
+
+  Approach: JpaRepository directly implements the port; mapping moves onto the 
+  entity
+
+  PaymentRepository (port — stays exactly the same):
+  public interface PaymentRepository {
+      Payment save(Payment payment);
+      Optional<Payment> findById(UUID id);
+  }
+
+  PaymentJpaEntity — gains static fromDomain + instance toDomain:
+  @Entity
+  @Table(name = "payment")
+  class PaymentJpaEntity {
+
+      @Id private UUID id;
+      @Column(name = "first_name", nullable = false) private String firstName;
+      @Column(name = "last_name",  nullable = false) private String lastName;
+      @Column(name = "zip_code",   nullable = false) private String zipCode;
+      @Convert(converter = EncryptedStringConverter.class)
+      @Column(name = "card_number_encrypted", nullable = false) private String
+  cardNumber;
+      @Column(name = "card_last_four", nullable = false, length = 4) private
+  String cardLastFour;
+      @Column(name = "created_at", nullable = false) private Instant createdAt;
+
+      protected PaymentJpaEntity() {}
+
+      static PaymentJpaEntity fromDomain(Payment p) {
+          PaymentJpaEntity e = new PaymentJpaEntity();
+          e.id = p.id();
+          e.firstName = p.firstName();
+          e.lastName = p.lastName();
+          e.zipCode = p.zipCode();
+          e.cardNumber = p.cardNumber().value();
+          e.cardLastFour = p.cardLast4().value();
+          e.createdAt = p.createdAt();
+          return e;
+      }
+
+      Payment toDomain() {
+          return new Payment(id, firstName, lastName, zipCode,
+                  new CardNumber(cardNumber), createdAt);
+      }
+  }
+  Getters/setters disappear — only JPA reflects into the fields, and the two
+  mapping methods are the only callers. ~30 lines saved per entity.
+
+  PaymentJpaRepository — extends both JpaRepository and the port; default 
+  methods bridge the two:
+  public interface PaymentJpaRepository
+          extends JpaRepository<PaymentJpaEntity, UUID>, PaymentRepository {
+
+      @Override
+      default Payment save(Payment payment) {
+          return save(PaymentJpaEntity.fromDomain(payment)).toDomain();
+      }
+
+      @Override
+      default Optional<Payment> findById(UUID id) {
+          return ((JpaRepository<PaymentJpaEntity, UUID>) this).findById(id)
+                  .map(PaymentJpaEntity::toDomain);
+      }
+  }
+
+  PaymentRepositoryAdapter — deleted. Same pattern collapses
+  WebhookSubscriptionRepositoryAdapter and WebhookDeliveryRepositoryAdapter.
+
+  Sharp edges to be aware of
+
+  1. Method name clash on save / findById. Both JpaRepository and the port
+  declare them. Spring Data is fine with this — the runtime proxy implements
+  JpaRepository.save(S) for entity types, and the default methods cover the
+  domain-typed overloads. But if a port method ever has the same erased
+  signature as a JpaRepository method (e.g. findById(UUID)), you need the cast
+  shown above to disambiguate. It works, but it's slightly ugly.
+  2. WebhookDeliveryRepository has custom queries. Anything beyond CRUD (e.g.
+  "claim batch where status=PENDING and next_attempt_at<=now") needs @Query on
+  the JPA interface returning PaymentJpaEntity lists, plus a default bridge that
+   maps to domain. Worth checking that one before committing — if the queries
+  are gnarly, a thin adapter class may stay cleaner.
+  3. Package-private entity. Since nothing outside adapter.out.persistence
+  references the entity anymore, it can drop to package-private. Good fence.
+  4. EncryptedStringConverter is unchanged. Still a @Component injecting
+  CardEncryptor.
+
+  Net change for the Payment aggregate
+
+  - Deleted: PaymentRepositoryAdapter.java (~50 lines)
+  - Modified: PaymentJpaRepository gains 8 lines; PaymentJpaEntity loses ~14
+  getter/setter lines, gains ~15 mapper lines (roughly wash on the entity).
+  - Net: ~50 fewer lines and one fewer file per aggregate, ×3 aggregates = ~150
+  lines and 3 files removed. Tests are unaffected — they use
+  InMemoryPaymentRepository which already implements the port.
+
+  Want me to apply this same treatment in the plan, or does anything above
+  change your mind on the persistence question?
+
+✻ Brewed for 38s
+
+❯ lets go back and keep the adapters                                            
+
+● Got it — repository adapters stay. One question left on the wiring choice.
+
+● User answered Claude's questions:
+  ⎿  · How should service wiring change? → Replace @Bean wiring with @Service 
+     (Recommended)
+
+  Read 1 file (ctrl+o to expand)
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/do-the-changes-to-composed-bengio.md · /plan
+      to edit
+     Reduce application/adapter boilerplate
+
+     Context
+
+     The payment app follows a strict hexagonal layout. Most ports/adapters earn
+      their keep, but several are pure ceremony around a single trivial
+     implementation:
+
+     - Clock, IdGenerator, EventSerializer each wrap one JDK/library call and
+     have one production impl.
+     - Six use-case interfaces (CreatePaymentUseCase, GetPaymentUseCase,
+     RegisterWebhookUseCase, ListWebhooksUseCase, DeleteWebhookUseCase,
+     DispatchPendingWebhooksUseCase) each have exactly one impl and add a layer
+     of indirection between controllers and services.
+     - ApplicationServiceConfig manually wires three services via @Bean
+     factories that mirror their constructor signatures verbatim.
+
+     The goal is to delete this incidental scaffolding while keeping the seams
+     that real tests use: repository ports (the InMemory* test doubles depend on
+      them), WebhookSender, CardEncryptor, the
+     Payment/WebhookSubscription/WebhookDelivery domain model, and the
+     *RepositoryAdapter classes (kept by user request). Net effect: ~12 fewer
+     files, simpler controller/service signatures, no loss of testability.
+
+     Scope decisions (confirmed with user)
+
+     1. Drop trivial single-impl ports: Clock, IdGenerator, EventSerializer, and
+      the six use-case interfaces.
+     2. Keep *RepositoryAdapter classes and the JpaEntity/JpaRepository split
+     as-is.
+     3. Replace manual @Bean wiring with @Service annotations; delete
+     ApplicationServiceConfig.
+
+     Changes
+
+     1. Replace the Clock port with java.time.Clock
+
+     - Delete application/port/out/Clock.java and
+     adapter/out/time/SystemClock.java.
+     - In PaymentApplication, declare @Bean public Clock clock() { return 
+     Clock.systemUTC(); } (use java.time.Clock).
+     - In PaymentService, WebhookService, WebhookDispatchService: change field
+     type to java.time.Clock; replace clock.now() calls with clock.instant().
+     - In test/.../support/FixedClock.java: delete. Tests that need a fixed
+     clock use Clock.fixed(Instant.parse("..."), ZoneOffset.UTC).
+     - Update PaymentServiceTest, WebhookDispatchServiceTest, and any other test
+      constructing services to pass Clock.fixed(...) instead of new 
+     FixedClock(...).
+
+     2. Replace the IdGenerator port with Supplier<UUID>
+
+     - Delete application/port/out/IdGenerator.java and
+     adapter/out/id/RandomIdGenerator.java.
+     - In PaymentApplication, declare @Bean public Supplier<UUID> ids() { return
+      UUID::randomUUID; }.
+     - In PaymentService, WebhookService: change field to Supplier<UUID> ids;
+     replace ids.newId() with ids.get().
+     - In test/.../support/SequentialIdGenerator.java: delete. Tests construct
+     an inline counter, e.g.
+     AtomicLong seq = new AtomicLong();
+     Supplier<UUID> ids = () -> new UUID(0L, seq.incrementAndGet());
+     - Update tests accordingly.
+
+     3. Replace the EventSerializer port with ObjectMapper
+
+     - Delete application/port/out/EventSerializer.java and
+     adapter/out/http/JacksonEventSerializer.java.
+     - In PaymentService: change field to ObjectMapper objectMapper. Replace
+     eventSerializer.serialize(event) with a small private helper:
+     private String serialize(PaymentCreatedEvent e) {
+         try { return objectMapper.writeValueAsString(e); }
+         catch (JsonProcessingException ex) { throw new
+     IllegalStateException("failed to serialize event", ex); }
+     }
+     - Spring Boot already provides an ObjectMapper bean — constructor injection
+      just works.
+     - Delete test/.../adapter/out/http/JacksonEventSerializerTest.java (the
+     class it covered no longer exists; ObjectMapper is a library we trust).
+     - In PaymentServiceTest: replace the lambda EventSerializer with new 
+     ObjectMapper().registerModule(new JavaTimeModule()) (or whatever Spring's
+     autoconfigured ObjectMapper does — verify Instant serialization in the
+     test).
+
+     4. Delete the use-case interfaces; controllers depend on services directly
+
+     - Delete the entire application/port/in/ directory:
+     CreatePaymentUseCase.java, GetPaymentUseCase.java,
+     RegisterWebhookUseCase.java, ListWebhooksUseCase.java,
+     DeleteWebhookUseCase.java, DispatchPendingWebhooksUseCase.java.
+     - Move the CreatePaymentCommand record from inside CreatePaymentUseCase to
+     a top-level record nested inside PaymentService (keeps it co-located with
+     its only consumer).
+     - PaymentService no longer implements anything. Same for WebhookService and
+      WebhookDispatchService.
+     - PaymentController constructor takes PaymentService directly; replace
+     createPayment.create(...) and getPayment.findById(...) with
+     paymentService.create(...) / paymentService.findById(...).
+     - WebhookController constructor takes WebhookService directly; update
+     method calls similarly.
+     - WebhookDispatcherScheduler constructor takes WebhookDispatchService
+     directly.
+     - Update PaymentControllerTest and WebhookControllerTest @MockitoBean types
+      from the use-case interface to the concrete service class. Mockito mocks
+     concrete classes fine; no further test changes needed.
+
+     5. Replace ApplicationServiceConfig with @Service annotations
+
+     - Annotate PaymentService, WebhookService, WebhookDispatchService with
+     @Service.
+     - WebhookDispatchService currently takes int batchSize, int maxAttempts, 
+     long backoffCapSeconds from WebhookDispatcherProperties. Two options — pick
+      the simpler:
+       - Preferred: change its constructor to take WebhookDispatcherProperties
+     directly; read the three values inside the constructor or store the props
+     object.
+       - Alternative: annotate the three primitive params with
+     @Value("${webhook.dispatcher.batch-size}") etc.
+     - Delete adapter/config/ApplicationServiceConfig.java.
+     - Move @EnableScheduling and
+     @EnableConfigurationProperties({EncryptionProperties.class, 
+     WebhookDispatcherProperties.class}) onto PaymentApplication (alongside the
+     new Clock and Supplier<UUID> @Bean methods from steps 1 and 2).
+     PaymentApplication becomes the single composition root.
+
+     6. Test-double cleanups
+
+     - InMemoryPaymentRepository, InMemoryWebhookSubscriptionRepository,
+     InMemoryWebhookDeliveryRepository are unaffected — they implement
+     repository ports, which we are keeping.
+     - ProgrammableSender (nested in WebhookDispatchServiceTest) is unaffected —
+      it implements WebhookSender, which we are keeping.
+
+     Files deleted
+
+     - application/port/in/CreatePaymentUseCase.java
+     - application/port/in/GetPaymentUseCase.java
+     - application/port/in/RegisterWebhookUseCase.java
+     - application/port/in/ListWebhooksUseCase.java
+     - application/port/in/DeleteWebhookUseCase.java
+     - application/port/in/DispatchPendingWebhooksUseCase.java
+     - application/port/out/Clock.java
+     - application/port/out/IdGenerator.java
+     - application/port/out/EventSerializer.java
+     - adapter/out/time/SystemClock.java
+     - adapter/out/id/RandomIdGenerator.java
+     - adapter/out/http/JacksonEventSerializer.java
+     - adapter/config/ApplicationServiceConfig.java
+     - test/.../support/FixedClock.java
+     - test/.../support/SequentialIdGenerator.java
+     - test/.../adapter/out/http/JacksonEventSerializerTest.java
+
+     (The application/port/in/ and adapter/out/time/ and adapter/out/id/
+     directories become empty and should be removed.)
+
+     Files modified
+
+     - PaymentApplication.java — add @EnableScheduling,
+     @EnableConfigurationProperties, Clock and Supplier<UUID> beans.
+     - PaymentService.java — @Service, drop implements, host
+     CreatePaymentCommand, switch to Clock / Supplier<UUID> / ObjectMapper.
+     - WebhookService.java — @Service, drop implements, switch to Clock /
+     Supplier<UUID>.
+     - WebhookDispatchService.java — @Service, drop implements, take
+     WebhookDispatcherProperties and Clock.
+     - PaymentController.java — depend on PaymentService directly.
+     - WebhookController.java — depend on WebhookService directly.
+     - WebhookDispatcherScheduler.java — depend on WebhookDispatchService
+     directly.
+     - All affected tests — see steps 1–4.
+
+     Critical files to reference while implementing
+
+     - src/main/java/dev/brenzo/payment_application/PaymentApplication.java (new
+      composition root)
+     - src/main/java/dev/brenzo/payment_application/application/service/PaymentS
+     ervice.java (largest set of edits)
+     - src/main/java/dev/brenzo/payment_application/application/service/WebhookD
+     ispatchService.java (constructor reshape)
+     - src/main/java/dev/brenzo/payment_application/adapter/config/WebhookDispat
+     cherProperties.java (still injected; unchanged)
+     - src/test/java/dev/brenzo/payment_application/application/service/PaymentS
+     erviceTest.java
+     - src/test/java/dev/brenzo/payment_application/application/service/WebhookD
+     ispatchServiceTest.java
+     - src/test/java/dev/brenzo/payment_application/adapter/in/web/PaymentContro
+     llerTest.java
+     - src/test/java/dev/brenzo/payment_application/adapter/in/web/WebhookContro
+     llerTest.java
+     - src/test/java/dev/brenzo/payment_application/integration/PaymentEndToEndT
+     est.java (sanity check the wiring still boots end-to-end)
+
+     Verification
+
+     1. ./gradlew compileJava compileTestJava — confirms all references to
+     deleted ports are gone.
+     2. ./gradlew test — full unit + controller test suite must pass unchanged
+     in behavior.
+     3. ./gradlew integrationTest (or whatever runs PaymentEndToEndTest) — boots
+      the full Spring context against TestContainers Postgres; this is the
+     load-bearing check that @Service autowiring + PaymentApplication bean
+     declarations replace ApplicationServiceConfig correctly and that the
+     dispatcher scheduler still fires.
+     4. Manual smoke (optional): docker compose up, POST /api/payments with the
+     Swagger example, confirm 201 + masked card response, then GET 
+     /api/payments/{id} returns the same payload. Register a webhook against a
+     local listener (e.g. nc -l 9000) and confirm the dispatcher delivers within
+      ~2s.
+     5. Sanity-grep for stragglers: rg "application.port.in|application.port.out
+     .(Clock|IdGenerator|EventSerializer)|ApplicationServiceConfig|FixedClock|Se
+     quentialIdGenerator|JacksonEventSerializer|RandomIdGenerator|SystemClock"
+     should return no hits in src/.
+● Let me read all the files I'll need to modify.
+
+  Read 6 files (ctrl+o to expand)
+
+  Read 17 files (ctrl+o to expand)
+
+● I have all the context I need. Let me start with the service layer changes
+  (this rolls up tasks 1, 2, 3, 4, and 5 — they all touch overlapping files).
+
+● Write(src/main/java/dev/brenzo/payment_application/application/service/Payment
+       Service.java)
+  ⎿  Added 38 lines, removed 17 lines
+       1  package dev.brenzo.payment_application.application.service;
+       2  
+       3 -import dev.brenzo.payment_application.application.port.in.Creat
+         -ePaymentUseCase;                                               
+       4 -import dev.brenzo.payment_application.application.port.in.GetPa
+         -ymentUseCase;                                                  
+       5 -import dev.brenzo.payment_application.application.port.out.Cloc
+         -k;                                                             
+       6 -import dev.brenzo.payment_application.application.port.out.Even
+         -tSerializer;                                                   
+       7 -import dev.brenzo.payment_application.application.port.out.IdGe
+         -nerator;                                                       
+       3  import dev.brenzo.payment_application.application.port.out.Paym
+          entRepository;
+       4  import dev.brenzo.payment_application.application.port.out.Webh
+          ookDeliveryRepository;
+       5  import dev.brenzo.payment_application.application.port.out.Webh
+          ookSubscriptionRepository;
+     ...
+       8  import dev.brenzo.payment_application.domain.webhook.PaymentCre
+          atedEvent;
+       9  import dev.brenzo.payment_application.domain.webhook.WebhookDel
+          ivery;
+      10  import dev.brenzo.payment_application.domain.webhook.WebhookSub
+          scription;
+      11 +import org.springframework.stereotype.Service;                 
+      12  import org.springframework.transaction.annotation.Transactional
+          ;
+      13 +import tools.jackson.core.JacksonException;                    
+      14 +import tools.jackson.databind.ObjectMapper;                    
+      15 +import tools.jackson.databind.node.ObjectNode;                 
+      16  
+      17 +import java.time.Clock;                                        
+      18  import java.time.Instant;
+      19  import java.util.List;
+      20  import java.util.Optional;
+      21  import java.util.UUID;
+      22 +import java.util.function.Supplier;                            
+      23  
+      23 -public class PaymentService implements CreatePaymentUseCase, Ge
+         -tPaymentUseCase {                                              
+      24 +@Service                                                       
+      25 +public class PaymentService {                                  
+      26  
+      27      private final PaymentRepository payments;
+      28      private final WebhookSubscriptionRepository subscriptions;
+      29      private final WebhookDeliveryRepository deliveries;
+      28 -    private final EventSerializer eventSerializer;             
+      29 -    private final IdGenerator ids;                             
+      30 +    private final ObjectMapper objectMapper;                   
+      31 +    private final Supplier<UUID> ids;                          
+      32      private final Clock clock;
+      33  
+      34      public PaymentService(PaymentRepository payments,
+      35                            WebhookSubscriptionRepository subscri
+          ptions,
+      36                            WebhookDeliveryRepository deliveries,
+      35 -                          EventSerializer eventSerializer,     
+      36 -                          IdGenerator ids,                     
+      37 +                          ObjectMapper objectMapper,           
+      38 +                          Supplier<UUID> ids,                  
+      39                            Clock clock) {
+      40          this.payments = payments;
+      41          this.subscriptions = subscriptions;
+      42          this.deliveries = deliveries;
+      41 -        this.eventSerializer = eventSerializer;                
+      43 +        this.objectMapper = objectMapper;                      
+      44          this.ids = ids;
+      45          this.clock = clock;
+      46      }
+      47  
+      46 -    @Override                                                  
+      48      @Transactional
+      49      public Payment create(CreatePaymentCommand cmd) {
+      49 -        Instant now = clock.now();                             
+      50 +        Instant now = clock.instant();                         
+      51          Payment payment = new Payment(
+      51 -                ids.newId(),                                   
+      52 +                ids.get(),                                     
+      53                  cmd.firstName(),
+      54                  cmd.lastName(),
+      55                  cmd.zipCode(),
+     ...
+      59  
+      60          List<WebhookSubscription> activeSubs = subscriptions.fi
+          ndAllActive();
+      61          for (WebhookSubscription sub : activeSubs) {
+      61 -            UUID deliveryId = ids.newId();                     
+      62 +            UUID deliveryId = ids.get();                       
+      63              PaymentCreatedEvent event = new PaymentCreatedEvent
+          (
+      64                      deliveryId,
+      65                      saved.id(),
+     ...
+      68                      saved.zipCode(),
+      69                      saved.cardLast4().value(),
+      70                      saved.createdAt());
+      70 -            String payload = eventSerializer.serialize(event); 
+      71 +            String payload = serialize(event);                 
+      72              WebhookDelivery delivery = WebhookDelivery.newPendi
+          ng(
+      73                      deliveryId, saved.id(), sub.id(), sub.url()
+          , payload, now);
+      74              deliveries.save(delivery);
+     ...
+       76          return saved;
+       77      }
+       78  
+       78 -    @Override                                                 
+       79      @Transactional(readOnly = true)
+       80      public Optional<Payment> findById(UUID id) {
+       81          return payments.findById(id);
+       82      }
+       83 +                                                              
+       84 +    private String serialize(PaymentCreatedEvent event) {     
+       85 +        ObjectNode root = objectMapper.createObjectNode();    
+       86 +        root.put("event", PaymentCreatedEvent.EVENT_TYPE);    
+       87 +        root.put("deliveryId", event.deliveryId().toString());
+       88 +        ObjectNode payment = root.putObject("payment");       
+       89 +        payment.put("id", event.paymentId().toString());      
+       90 +        payment.put("firstName", event.firstName());          
+       91 +        payment.put("lastName", event.lastName());            
+       92 +        payment.put("zipCode", event.zipCode());              
+       93 +        payment.put("cardLast4", event.cardLast4());          
+       94 +        payment.put("createdAt", event.createdAt().toString())
+          +;                                                             
+       95 +        try {                                                 
+       96 +            return objectMapper.writeValueAsString(root);     
+       97 +        } catch (JacksonException e) {                        
+       98 +            throw new IllegalStateException("failed to seriali
+          +ze PaymentCreatedEvent", e);                                  
+       99 +        }                                                     
+      100 +    }                                                         
+      101 +                                                              
+      102 +    public record CreatePaymentCommand(String firstName, Strin
+          +g lastName, String zipCode, String cardNumber) {              
+      103 +    }                                                         
+      104  }
+
+● Write(src/main/java/dev/brenzo/payment_application/application/service/Webhook
+       Service.java)
+  ⎿  Added 8 lines, removed 12 lines
+       1  package dev.brenzo.payment_application.application.service;
+       2  
+       3 -import dev.brenzo.payment_application.application.port.in.Delet
+         -eWebhookUseCase;                                               
+       4 -import dev.brenzo.payment_application.application.port.in.ListW
+         -ebhooksUseCase;                                                
+       5 -import dev.brenzo.payment_application.application.port.in.Regis
+         -terWebhookUseCase;                                             
+       6 -import dev.brenzo.payment_application.application.port.out.Cloc
+         -k;                                                             
+       7 -import dev.brenzo.payment_application.application.port.out.IdGe
+         -nerator;                                                       
+       3  import dev.brenzo.payment_application.application.port.out.Webh
+          ookSubscriptionRepository;
+       4  import dev.brenzo.payment_application.domain.webhook.WebhookSub
+          scription;
+       5 +import org.springframework.stereotype.Service;                 
+       6  import org.springframework.transaction.annotation.Transactional
+          ;
+       7  
+       8 +import java.time.Clock;                                        
+       9  import java.util.List;
+      10  import java.util.Optional;
+      11  import java.util.UUID;
+      12 +import java.util.function.Supplier;                            
+      13  
+      16 -public class WebhookService implements RegisterWebhookUseCase, 
+         -ListWebhooksUseCase, DeleteWebhookUseCase {                    
+      14 +@Service                                                       
+      15 +public class WebhookService {                                  
+      16  
+      17      private final WebhookSubscriptionRepository subscriptions;
+      19 -    private final IdGenerator ids;                             
+      18 +    private final Supplier<UUID> ids;                          
+      19      private final Clock clock;
+      20  
+      22 -    public WebhookService(WebhookSubscriptionRepository subscri
+         -ptions, IdGenerator ids, Clock clock) {                        
+      21 +    public WebhookService(WebhookSubscriptionRepository subscri
+         +ptions, Supplier<UUID> ids, Clock clock) {                     
+      22          this.subscriptions = subscriptions;
+      23          this.ids = ids;
+      24          this.clock = clock;
+      25      }
+      26  
+      28 -    @Override                                                  
+      27      @Transactional
+      28      public WebhookSubscription register(String url) {
+      31 -        WebhookSubscription sub = new WebhookSubscription(ids.n
+         -ewId(), url, true, clock.now());                               
+      29 +        WebhookSubscription sub = new WebhookSubscription(ids.g
+         +et(), url, true, clock.instant());                             
+      30          return subscriptions.save(sub);
+      31      }
+      32  
+      35 -    @Override                                                  
+      33      @Transactional(readOnly = true)
+      34      public List<WebhookSubscription> listActive() {
+      35          return subscriptions.findAllActive();
+      36      }
+      37  
+      41 -    @Override                                                  
+      38      @Transactional
+      39      public boolean delete(UUID id) {
+      40          Optional<WebhookSubscription> existing = subscriptions.
+          findById(id);
+
+● Write(src/main/java/dev/brenzo/payment_application/application/service/Webhook
+       DispatchService.java)
+  ⎿  Added 18 lines, removed 6 lines
+       1  package dev.brenzo.payment_application.application.service;
+       2  
+       3 -import dev.brenzo.payment_application.application.port.in.Dispa
+         -tchPendingWebhooksUseCase;                                     
+       4 -import dev.brenzo.payment_application.application.port.out.Cloc
+         -k;                                                             
+       3 +import dev.brenzo.payment_application.adapter.config.WebhookDis
+         +patcherProperties;                                             
+       4  import dev.brenzo.payment_application.application.port.out.Webh
+          ookDeliveryRepository;
+       5  import dev.brenzo.payment_application.application.port.out.Webh
+          ookSender;
+       6  import dev.brenzo.payment_application.domain.webhook.DeliverySt
+          atus;
+       7  import dev.brenzo.payment_application.domain.webhook.WebhookDel
+          ivery;
+       8 +import org.springframework.stereotype.Service;                 
+       9  
+      10 +import java.time.Clock;                                        
+      11  import java.util.concurrent.atomic.AtomicInteger;
+      12  
+      12 -public class WebhookDispatchService implements DispatchPendingW
+         -ebhooksUseCase {                                               
+      13 +@Service                                                       
+      14 +public class WebhookDispatchService {                          
+      15  
+      16      private final WebhookDeliveryRepository deliveries;
+      17      private final WebhookSender sender;
+     ...
+      23      public WebhookDispatchService(WebhookDeliveryRepository del
+          iveries,
+      24                                    WebhookSender sender,
+      25                                    Clock clock,
+      26 +                                  WebhookDispatcherProperties p
+         +rops) {                                                        
+      27 +        this(deliveries, sender, clock,                        
+      28 +                props.getBatchSize(), props.getMaxAttempts(), p
+         +rops.getBackoffCapSeconds());                                  
+      29 +    }                                                          
+      30 +                                                               
+      31 +    public WebhookDispatchService(WebhookDeliveryRepository del
+         +iveries,                                                       
+      32 +                                  WebhookSender sender,        
+      33 +                                  Clock clock,                 
+      34                                    int batchSize,
+      35                                    int maxAttempts,
+      36                                    int backoffCapSeconds) {
+     ...
+      42          this.backoffCapSeconds = backoffCapSeconds;
+      43      }
+      44  
+      35 -    @Override                                                  
+      45      public DispatchSummary dispatchBatch() {
+      46          AtomicInteger delivered = new AtomicInteger();
+      47          AtomicInteger retried = new AtomicInteger();
+     ...
+      66                               AtomicInteger retried,
+      67                               AtomicInteger failed) {
+      68          if (result.success()) {
+      60 -            delivery.markDelivered(clock.now(), result.statusCo
+         -de());                                                         
+      69 +            delivery.markDelivered(clock.instant(), result.stat
+         +usCode());                                                     
+      70              delivered.incrementAndGet();
+      71              return;
+      72          }
+      73          delivery.markFailedAndScheduleRetry(
+      65 -                clock.now(),                                   
+      74 +                clock.instant(),                               
+      75                  result.statusCode(),
+      76                  result.errorMessage(),
+      77                  maxAttempts,
+     ...
+      82              retried.incrementAndGet();
+      83          }
+      84      }
+      85 +                                                               
+      86 +    public record DispatchSummary(int claimed, int delivered, i
+         +nt retried, int failed) {                                      
+      87 +    }                                                          
+      88  }
+
+● Now update the controllers and scheduler to depend on services directly.
+
+● Update(src/main/java/dev/brenzo/payment_application/adapter/in/web/PaymentCont
+        roller.java)
+  ⎿  Added 1 line, removed 2 lines
+       3  import dev.brenzo.payment_application.adapter.in.web.dto.Create
+          PaymentRequest;
+       4  import dev.brenzo.payment_application.adapter.in.web.dto.ErrorR
+          esponse;
+       5  import dev.brenzo.payment_application.adapter.in.web.dto.Paymen
+          tResponse;
+       6 -import dev.brenzo.payment_application.application.port.in.Creat
+         -ePaymentUseCase;                                               
+       7 -import dev.brenzo.payment_application.application.port.in.GetPa
+         -ymentUseCase;                                                  
+       6 +import dev.brenzo.payment_application.application.service.Payme
+         +ntService;                                                     
+       7  import dev.brenzo.payment_application.domain.payment.Payment;
+       8  import io.swagger.v3.oas.annotations.Operation;
+       9  import io.swagger.v3.oas.annotations.media.Content;
+
+● Update(src/main/java/dev/brenzo/payment_application/adapter/in/web/PaymentCont
+        roller.java)
+  ⎿  Added 3 lines, removed 5 lines
+      31  @Tag(name = "Payments", description = "Create and retrieve paym
+          ents. Card numbers are encrypted at rest and never returned in 
+          full.")
+      32  public class PaymentController {
+      33  
+      34 -    private final CreatePaymentUseCase createPayment;          
+      35 -    private final GetPaymentUseCase getPayment;                
+      34 +    private final PaymentService paymentService;               
+      35  
+      37 -    public PaymentController(CreatePaymentUseCase createPayment
+         -, GetPaymentUseCase getPayment) {                              
+      38 -        this.createPayment = createPayment;                    
+      39 -        this.getPayment = getPayment;                          
+      36 +    public PaymentController(PaymentService paymentService) {  
+      37 +        this.paymentService = paymentService;                  
+      38      }
+      39  
+      40      @Operation(summary = "Create a payment",
+
+● Update(src/main/java/dev/brenzo/payment_application/adapter/in/web/PaymentCont
+        roller.java)  ⎿  Added 1 line, removed 1 line
+      78      @PostMapping
+      79      public ResponseEntity<PaymentResponse> create(@Valid @Reque
+          stBody CreatePaymentRequest request) {
+      80  
+      81 -        Payment created = createPayment.create(new CreatePaymen
+         -tUseCase.CreatePaymentCommand(                                 
+      81 +        Payment created = paymentService.create(new PaymentServ
+         +ice.CreatePaymentCommand(                                      
+      82                  request.firstName(),
+      83                  request.lastName(),
+      84                  request.zipCode(),
+
+● Update(src/main/java/dev/brenzo/payment_application/adapter/in/web/PaymentCont
+        roller.java)
+  ⎿  Added 1 line, removed 1 line
+      100      })
+      101      @GetMapping("/{id}")
+      102      public ResponseEntity<PaymentResponse> get(@PathVariable U
+           UID id) {
+      103 -        return getPayment.findById(id)                        
+      103 +        return paymentService.findById(id)                    
+      104                  .map(p -> ResponseEntity.ok(PaymentResponse.fr
+           om(p)))
+      105                  .orElseGet(() -> ResponseEntity.status(HttpSta
+           tus.NOT_FOUND).build());
+      106      }
+
+● Update(src/main/java/dev/brenzo/payment_application/adapter/in/web/WebhookCont
+        roller.java)
+  ⎿  Added 1 line, removed 3 lines
+       3  import dev.brenzo.payment_application.adapter.in.web.dto.ErrorR
+          esponse;
+       4  import dev.brenzo.payment_application.adapter.in.web.dto.Regist
+          erWebhookRequest;
+       5  import dev.brenzo.payment_application.adapter.in.web.dto.Webhoo
+          kResponse;
+       6 -import dev.brenzo.payment_application.application.port.in.Delet
+         -eWebhookUseCase;                                               
+       7 -import dev.brenzo.payment_application.application.port.in.ListW
+         -ebhooksUseCase;                                                
+       8 -import dev.brenzo.payment_application.application.port.in.Regis
+         -terWebhookUseCase;                                             
+       6 +import dev.brenzo.payment_application.application.service.Webho
+         +okService;                                                     
+       7  import dev.brenzo.payment_application.domain.webhook.WebhookSub
+          scription;
+       8  import io.swagger.v3.oas.annotations.Operation;
+       9  import io.swagger.v3.oas.annotations.media.Content;
+
+● Update(src/main/java/dev/brenzo/payment_application/adapter/in/web/WebhookCont
+        roller.java)
+  ⎿  Added 3 lines, removed 9 lines
+      33  @Tag(name = "Webhooks", description = "Register endpoints to re
+          ceive `payment.created` events.")
+      34  public class WebhookController {
+      35  
+      36 -    private final RegisterWebhookUseCase register;             
+      37 -    private final ListWebhooksUseCase list;                    
+      38 -    private final DeleteWebhookUseCase delete;                 
+      36 +    private final WebhookService webhookService;               
+      37  
+      40 -    public WebhookController(RegisterWebhookUseCase register,  
+      41 -                             ListWebhooksUseCase list,         
+      42 -                             DeleteWebhookUseCase delete) {    
+      43 -        this.register = register;                              
+      44 -        this.list = list;                                      
+      45 -        this.delete = delete;                                  
+      38 +    public WebhookController(WebhookService webhookService) {  
+      39 +        this.webhookService = webhookService;                  
+      40      }
+      41  
+      42      @Operation(summary = "Register a webhook subscription",
+
+● Update(src/main/java/dev/brenzo/payment_application/adapter/in/web/WebhookCont
+        roller.java)
+  ⎿  Added 1 line, removed 1 line
+      65      })
+      66      @PostMapping
+      67      public ResponseEntity<WebhookResponse> register(@Valid @Req
+          uestBody RegisterWebhookRequest request) {
+      68 -        WebhookSubscription created = register.register(request
+         -.url());                                                       
+      68 +        WebhookSubscription created = webhookService.register(r
+         +equest.url());                                                 
+      69          URI location = ServletUriComponentsBuilder.fromCurrentR
+          equest()
+      70                  .path("/{id}")
+      71                  .buildAndExpand(created.id())
+
+● Update(src/main/java/dev/brenzo/payment_application/adapter/in/web/WebhookCont
+        roller.java)
+  ⎿  Added 1 line, removed 1 line
+      79                      schema = @Schema(implementation = WebhookRe
+          sponse.class))))
+      80      @GetMapping
+      81      public List<WebhookResponse> list() {
+      82 -        return list.listActive().stream().map(WebhookResponse::
+         -from).toList();                                                
+      82 +        return webhookService.listActive().stream().map(Webhook
+         +Response::from).toList();                                      
+      83      }
+      84  
+      85      @Operation(summary = "Deactivate a webhook subscription",
+
+● Update(src/main/java/dev/brenzo/payment_application/adapter/in/web/WebhookCont
+        roller.java)
+  ⎿  Added 1 line, removed 1 line
+      91      })
+      92      @DeleteMapping("/{id}")
+      93      public ResponseEntity<Void> delete(@PathVariable UUID id) {
+      94 -        boolean removed = delete.delete(id);                   
+      94 +        boolean removed = webhookService.delete(id);           
+      95          if (!removed) {
+      96              return ResponseEntity.status(HttpStatus.NOT_FOUND).
+          build();
+      97          }
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/scheduling/Webh
+       ookDispatcherScheduler.java)
+  ⎿  Added 4 lines, removed 4 lines
+      1  package dev.brenzo.payment_application.adapter.out.scheduling;
+      2  
+      3 -import dev.brenzo.payment_application.application.port.in.Dispat
+        -chPendingWebhooksUseCase;                                       
+      3 +import dev.brenzo.payment_application.application.service.Webhoo
+        +kDispatchService;                                               
+      4  import org.slf4j.Logger;
+      5  import org.slf4j.LoggerFactory;
+      6  import org.springframework.scheduling.annotation.Scheduled;
+     ...
+      11  
+      12      private static final Logger log = LoggerFactory.getLogger(W
+          ebhookDispatcherScheduler.class);
+      13  
+      14 -    private final DispatchPendingWebhooksUseCase dispatcher;   
+      14 +    private final WebhookDispatchService dispatcher;           
+      15  
+      16 -    public WebhookDispatcherScheduler(DispatchPendingWebhooksUs
+         -eCase dispatcher) {                                            
+      16 +    public WebhookDispatcherScheduler(WebhookDispatchService di
+         +spatcher) {                                                    
+      17          this.dispatcher = dispatcher;
+      18      }
+      19  
+      20      @Scheduled(fixedDelayString = "${app.webhooks.dispatcher.po
+          ll-interval-ms:2000}")
+      21      public void runOnce() {
+      22          try {
+      23 -            DispatchPendingWebhooksUseCase.DispatchSummary summ
+         -ary = dispatcher.dispatchBatch();                              
+      23 +            WebhookDispatchService.DispatchSummary summary = di
+         +spatcher.dispatchBatch();                                      
+      24              if (summary.claimed() > 0) {
+      25                  log.info("webhook dispatch batch: claimed={} de
+          livered={} retried={} failed={}",
+      26                          summary.claimed(), summary.delivered(),
+           summary.retried(), summary.failed());
+
+● Now update PaymentApplication to be the composition root.
+
+● Write(src/main/java/dev/brenzo/payment_application/PaymentApplication.java)
+  ⎿  Added 21 lines
+       1  package dev.brenzo.payment_application;
+       2  
+       3 +import dev.brenzo.payment_application.adapter.config.WebhookDis
+         +patcherProperties;                                             
+       4 +import dev.brenzo.payment_application.adapter.out.crypto.Encryp
+         +tionProperties;                                                
+       5  import org.springframework.boot.SpringApplication;
+       6  import org.springframework.boot.autoconfigure.SpringBootApplica
+          tion;
+       7 +import org.springframework.boot.context.properties.EnableConfig
+         +urationProperties;                                             
+       8 +import org.springframework.context.annotation.Bean;            
+       9 +import org.springframework.scheduling.annotation.EnableScheduli
+         +ng;                                                            
+      10  
+      11 +import java.time.Clock;                                        
+      12 +import java.util.UUID;                                         
+      13 +import java.util.function.Supplier;                            
+      14 +                                                               
+      15  @SpringBootApplication
+      16 +@EnableScheduling                                              
+      17 +@EnableConfigurationProperties({EncryptionProperties.class, Web
+         +hookDispatcherProperties.class})                               
+      18  public class PaymentApplication {
+      19  
+      20    public static void main(String[] args) {
+      21      SpringApplication.run(PaymentApplication.class, args);
+      22    }
+      23  
+      24 +  @Bean                                                        
+      25 +  public Clock clock() {                                       
+      26 +    return Clock.systemUTC();                                  
+      27 +  }                                                            
+      28 +                                                               
+      29 +  @Bean                                                        
+      30 +  public Supplier<UUID> ids() {                                
+      31 +    return UUID::randomUUID;                                   
+      32 +  }                                                            
+      33 +                                                               
+      34  }
+
+● Now delete the obsolete files: ports, adapters, use-case interfaces,
+  ApplicationServiceConfig, JacksonEventSerializer + its test.
+
+● Bash(rm -v \
+        src/main/java/dev/brenzo/payment_application/application/port/out/Clock.
+      java \…)
+  ⎿  removed 'src/main/java/dev/brenzo/payment_application/application/port
+     /out/Clock.java'
+     removed 'src/main/java/dev/brenzo/payment_application/application/port
+     … +17 lines (ctrl+o to expand)
+
+● Bash(rmdir -v \
+        src/main/java/dev/brenzo/payment_application/application/port/in \…)
+  ⎿  rmdir: removing directory, 'src/main/java/dev/brenzo/payment_applicati
+     on/application/port/in'
+     rmdir: removing directory, 'src/main/java/dev/brenzo/payment_applicati
+     … +5 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Write(src/test/java/dev/brenzo/payment_application/support/FixedClock.java)
+  ⎿  Added 15 lines, removed 4 lines
+       1  package dev.brenzo.payment_application.support;
+       2  
+       3 -import dev.brenzo.payment_application.application.port.out.Cloc
+         -k;                                                             
+       4 -                                                               
+       3 +import java.time.Clock;                                        
+       4  import java.time.Instant;
+       5 +import java.time.ZoneId;                                       
+       6 +import java.time.ZoneOffset;                                   
+       7  
+       7 -public class FixedClock implements Clock {                     
+       8 +public class FixedClock extends Clock {                        
+       9  
+      10      private Instant now;
+      11  
+     ...
+      22      }
+      23  
+      24      @Override
+      24 -    public Instant now() {                                     
+      25 +    public Instant instant() {                                 
+      26          return now;
+      27      }
+      28 +                                                               
+      29 +    @Override                                                  
+      30 +    public ZoneId getZone() {                                  
+      31 +        return ZoneOffset.UTC;                                 
+      32 +    }                                                          
+      33 +                                                               
+      34 +    @Override                                                  
+      35 +    public Clock withZone(ZoneId zone) {                       
+      36 +        return this;                                           
+      37 +    }                                                          
+      38  }
+
+● Write(src/test/java/dev/brenzo/payment_application/support/SequentialIdGenerat
+       or.java)
+  ⎿  Added 3 lines, removed 4 lines
+       1  package dev.brenzo.payment_application.support;
+       2  
+       3 -import dev.brenzo.payment_application.application.port.out.IdGe
+         -nerator;                                                       
+       4 -                                                               
+       3  import java.util.UUID;
+       4  import java.util.concurrent.atomic.AtomicLong;
+       5 +import java.util.function.Supplier;                            
+       6  
+       8 -public class SequentialIdGenerator implements IdGenerator {    
+       7 +public class SequentialIdGenerator implements Supplier<UUID> { 
+       8  
+       9      private final AtomicLong counter = new AtomicLong();
+      10  
+      11      @Override
+      13 -    public UUID newId() {                                      
+      12 +    public UUID get() {                                        
+      13          long n = counter.incrementAndGet();
+      14          return new UUID(0L, n);
+      15      }
+
+● Write(src/test/java/dev/brenzo/payment_application/support/InMemoryWebhookDeli
+       veryRepository.java)
+  ⎿  Added 2 lines, removed 2 lines
+       1  package dev.brenzo.payment_application.support;
+       2  
+       3 -import dev.brenzo.payment_application.application.port.out.Cloc
+         -k;                                                             
+       3  import dev.brenzo.payment_application.application.port.out.Webh
+          ookDeliveryRepository;
+       4  import dev.brenzo.payment_application.domain.webhook.DeliverySt
+          atus;
+       5  import dev.brenzo.payment_application.domain.webhook.WebhookDel
+          ivery;
+       6  
+       7 +import java.time.Clock;                                        
+       8  import java.util.ArrayList;
+       9  import java.util.LinkedHashMap;
+      10  import java.util.List;
+     ...
+      29  
+      30      @Override
+      31      public int claimAndProcessDuePending(int batchSize, Consume
+          r<WebhookDelivery> processor) {
+      32 -        var now = clock.now();                                 
+      32 +        var now = clock.instant();                             
+      33          List<WebhookDelivery> due = store.values().stream()
+      34                  .filter(d -> d.status() == DeliveryStatus.PENDI
+          NG)
+      35                  .filter(d -> !d.nextAttemptAt().isAfter(now))
+
+● Now update the service tests.
+
+● Write(src/test/java/dev/brenzo/payment_application/application/service/Payment
+       ServiceTest.java)
+  ⎿  Added 18 lines, removed 20 lines
+      1  package dev.brenzo.payment_application.application.service;
+      2  
+      3 -import dev.brenzo.payment_application.application.port.in.Create
+        -PaymentUseCase.CreatePaymentCommand;                            
+      4 -import dev.brenzo.payment_application.application.port.out.Event
+        -Serializer;                                                     
+      3 +import dev.brenzo.payment_application.application.service.Paymen
+        +tService.CreatePaymentCommand;                                  
+      4  import dev.brenzo.payment_application.domain.payment.InvalidCard
+         NumberException;
+      5  import dev.brenzo.payment_application.domain.payment.Payment;
+      6  import dev.brenzo.payment_application.domain.webhook.DeliverySta
+         tus;
+     ...
+      14  import dev.brenzo.payment_application.support.SequentialIdGener
+          ator;
+      15  import org.junit.jupiter.api.BeforeEach;
+      16  import org.junit.jupiter.api.Test;
+      17 +import tools.jackson.databind.JsonNode;                        
+      18 +import tools.jackson.databind.ObjectMapper;                    
+      19  
+      20  import java.time.Instant;
+      21  import java.util.List;
+     ...
+      34      InMemoryWebhookDeliveryRepository deliveries;
+      35      SequentialIdGenerator ids;
+      36      FixedClock clock;
+      36 -    EventSerializer eventSerializer;                           
+      37 +    ObjectMapper objectMapper;                                 
+      38      PaymentService service;
+      39  
+      40      @BeforeEach
+     ...
+      44          clock = new FixedClock(T0);
+      45          deliveries = new InMemoryWebhookDeliveryRepository(cloc
+          k);
+      46          ids = new SequentialIdGenerator();
+      46 -        eventSerializer = event -> "{\"deliveryId\":\"" + event
+         -.deliveryId()                                                  
+      47 -                + "\",\"cardLast4\":\"" + event.cardLast4() + "
+         -\"}";                                                          
+      48 -        service = new PaymentService(payments, subs, deliveries
+         -, eventSerializer, ids, clock);                                
+      47 +        objectMapper = new ObjectMapper();                     
+      48 +        service = new PaymentService(payments, subs, deliveries
+         +, objectMapper, ids, clock);                                   
+      49      }
+      50  
+      51      @Test
+     ...
+      70  
+      71      @Test
+      72      void creates_one_pending_delivery_per_active_webhook() {
+      73 -        UUID s1 = ids.newId();                                 
+      74 -        UUID s2 = ids.newId();                                 
+      75 -        UUID s3 = ids.newId();                                 
+      73 +        UUID s1 = ids.get();                                   
+      74 +        UUID s2 = ids.get();                                   
+      75 +        UUID s3 = ids.get();                                   
+      76          subs.save(new WebhookSubscription(s1, "https://a.test/h
+          ook", true, T0));
+      77          subs.save(new WebhookSubscription(s2, "https://b.test/h
+          ook", true, T0));
+      78          subs.save(new WebhookSubscription(s3, "https://inactive
+          .test/hook", false, T0));
+     ...
+      101  
+      102      @Test
+      103      void payload_uses_PaymentCreatedEvent_event_type() {
+      104 -        // serializer captures the event raw; write our own se
+          -ntinel                                                        
+      105 -        var captured = new java.util.ArrayList<PaymentCreatedE
+          -vent>();                                                      
+      106 -        eventSerializer = e -> { captured.add(e); return "{}";
+          - };                                                           
+      107 -        service = new PaymentService(payments, subs, deliverie
+          -s, eventSerializer, ids, clock);                              
+      108 -        subs.save(new WebhookSubscription(ids.newId(), "https:
+          -//x.test/h", true, T0));                                      
+      104 +        subs.save(new WebhookSubscription(ids.get(), "https://
+          +x.test/h", true, T0));                                        
+      105  
+      106          Payment p = service.create(new CreatePaymentCommand("A
+           da", "Lovelace", "10001", VALID_CARD));
+      107  
+      112 -        assertThat(captured).hasSize(1);                      
+      113 -        PaymentCreatedEvent ev = captured.get(0);             
+      114 -        assertThat(ev.paymentId()).isEqualTo(p.id());         
+      115 -        assertThat(ev.cardLast4()).isEqualTo("4242");         
+      116 -        assertThat(ev.firstName()).isEqualTo("Ada");          
+      117 -        assertThat(PaymentCreatedEvent.EVENT_TYPE).isEqualTo("
+          -payment.created");                                            
+      108 +        List<WebhookDelivery> created = deliveries.findByPayme
+          +ntId(p.id());                                                 
+      109 +        assertThat(created).hasSize(1);                       
+      110 +        JsonNode payload = objectMapper.readTree(created.get(0
+          +).payloadJson());                                             
+      111 +        assertThat(payload.get("event").asString()).isEqualTo(
+          +PaymentCreatedEvent.EVENT_TYPE);                              
+      112 +        assertThat(payload.get("event").asString()).isEqualTo(
+          +"payment.created");                                           
+      113 +        assertThat(payload.get("payment").get("id").asString()
+          +).isEqualTo(p.id().toString());                               
+      114 +        assertThat(payload.get("payment").get("cardLast4").asS
+          +tring()).isEqualTo("4242");                                   
+      115 +        assertThat(payload.get("payment").get("firstName").asS
+          +tring()).isEqualTo("Ada");                                    
+      116      }
+      117  }
+
+● Update(src/test/java/dev/brenzo/payment_application/application/service/Webhoo
+        kDispatchServiceTest.java)
+  ⎿  Added 1 line, removed 1 line
+      1  package dev.brenzo.payment_application.application.service;
+      2  
+      3 -import dev.brenzo.payment_application.application.port.in.Dispat
+        -chPendingWebhooksUseCase.DispatchSummary;                       
+      3  import dev.brenzo.payment_application.application.port.out.Webho
+         okSender;
+      4 +import dev.brenzo.payment_application.application.service.Webhoo
+        +kDispatchService.DispatchSummary;                               
+      5  import dev.brenzo.payment_application.domain.webhook.DeliverySta
+         tus;
+      6  import dev.brenzo.payment_application.domain.webhook.WebhookDeli
+         very;
+      7  import dev.brenzo.payment_application.support.FixedClock;
+
+● Now update the controller tests to mock the concrete service classes.
+
+● Update(src/test/java/dev/brenzo/payment_application/adapter/in/web/PaymentCont
+        rollerTest.java)  ⎿  Added 1 line, removed 2 lines
+      1  package dev.brenzo.payment_application.adapter.in.web;
+      2  
+      3 -import dev.brenzo.payment_application.application.port.in.Create
+        -PaymentUseCase;                                                 
+      4 -import dev.brenzo.payment_application.application.port.in.GetPay
+        -mentUseCase;                                                    
+      3 +import dev.brenzo.payment_application.application.service.Paymen
+        +tService;                                                       
+      4  import dev.brenzo.payment_application.domain.payment.CardNumber;
+      5  import dev.brenzo.payment_application.domain.payment.InvalidCard
+         NumberException;
+      6  import dev.brenzo.payment_application.domain.payment.Payment;
+
+● Update(src/test/java/dev/brenzo/payment_application/adapter/in/web/PaymentCont
+        rollerTest.java)
+  ⎿  Added 1 line, removed 2 lines
+      29  class PaymentControllerTest {
+      30  
+      31      @Autowired MockMvc mvc;
+      32 -    @MockitoBean CreatePaymentUseCase createPayment;           
+      33 -    @MockitoBean GetPaymentUseCase getPayment;                 
+      32 +    @MockitoBean PaymentService paymentService;                
+      33  
+      34      @Test
+      35      void post_creates_payment_and_returns_201_with_masked_card(
+          ) throws Exception {
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -i 's/createPayment\.create/paymentService.create/g;
+      s/getPayment\.findById/paymentService.findById/g'
+      src/test/java/dev/brenzo/payment_application/adapter/…)
+  ⎿  (No output)
+
+● Now WebhookControllerTest.
+
+● Update(src/test/java/dev/brenzo/payment_application/adapter/in/web/WebhookCont
+        rollerTest.java)
+  ⎿  Added 1 line, removed 3 lines
+      1  package dev.brenzo.payment_application.adapter.in.web;
+      2  
+      3 -import dev.brenzo.payment_application.application.port.in.Delete
+        -WebhookUseCase;                                                 
+      4 -import dev.brenzo.payment_application.application.port.in.ListWe
+        -bhooksUseCase;                                                  
+      5 -import dev.brenzo.payment_application.application.port.in.Regist
+        -erWebhookUseCase;                                               
+      3 +import dev.brenzo.payment_application.application.service.Webhoo
+        +kService;                                                       
+      4  import dev.brenzo.payment_application.domain.webhook.WebhookSubs
+         cription;
+      5  import org.junit.jupiter.api.Test;
+      6  import org.springframework.beans.factory.annotation.Autowired;
+
+● Update(src/test/java/dev/brenzo/payment_application/adapter/in/web/WebhookCont
+        rollerTest.java)
+  ⎿  Added 1 line, removed 3 lines
+      27  class WebhookControllerTest {
+      28  
+      29      @Autowired MockMvc mvc;
+      30 -    @MockitoBean RegisterWebhookUseCase register;              
+      31 -    @MockitoBean ListWebhooksUseCase list;                     
+      32 -    @MockitoBean DeleteWebhookUseCase delete;                  
+      30 +    @MockitoBean WebhookService webhookService;                
+      31  
+      32      @Test
+      33      void post_registers_webhook() throws Exception {
+
+● Bash(sed -i 's/register\.register(/webhookService.register(/g;
+      s/list\.listActive(/webhookService.listActive(/g;
+      s/delete\.delete(/webhookService.delete(/g' src/test…)
+  ⎿  19:import static org.springframework.test.web.servlet.request.MockMvcR
+     equestBuilders.delete;
+     30:    @MockitoBean WebhookService webhookService;
+     … +11 lines (ctrl+o to expand)
+
+● Now sanity check for stragglers and try to compile.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Clean. Now compile and run tests.
+
+● Bash(./gradlew compileJava compileTestJava 2>&1 | tail -60)
+  ⎿  Starting a Gradle Daemon (subsequent builds will be faster)
+     > Task :compileJava
+     > Task :processResources UP-TO-DATE
+     … +7 lines (ctrl+o to expand)
+  ⎿  (timeout 3m)
+
+● Compiles. Now the unit tests (skipping the integration test that needs
+  Docker).
+
+● Bash(./gradlew test --tests "dev.brenzo.payment_application.application.*"
+      --tests "dev.brenzo.payment_application.domain.*" --tests
+      "dev.brenzo.payment_application.…)
+  ⎿  > Task :compileJava UP-TO-DATE
+     > Task :processResources UP-TO-DATE
+     > Task :classes UP-TO-DATE
+     … +11 lines (ctrl+o to expand)
+  ⎿  (timeout 5m)
+
+● Bash(./gradlew test --tests
+      "dev.brenzo.payment_application.application.service.*" --tests
+      "dev.brenzo.payment_application.adapter.in.web.*" --info 2>&1 | grep -E
+      "P…)
+  ⎿  BUILD SUCCESSFUL in 2s
+
+● Bash(./gradlew test --tests
+      "dev.brenzo.payment_application.application.service.PaymentServiceTest"
+      --tests "dev.brenzo.payment_application.application.service.Webho…)
+  ⎿  > Task :compileJava
+     > Task :processResources
+     > Task :classes
+     … +11 lines (ctrl+o to expand)
+  ⎿  (timeout 5m)
+
+  Searched for 1 pattern (ctrl+o to expand)
+● All 57 unit tests pass. Let me try the integration test if Docker is
+  available.
+
+● Bash(docker info > /dev/null 2>&1 && echo "docker available" || echo "no
+      docker")
+  ⎿  docker available
+
+● Bash(./gradlew test --tests
+      "dev.brenzo.payment_application.integration.PaymentEndToEndTest" 2>&1 |
+      tail -40)
+  ⎿  > Task :compileJava UP-TO-DATE
+     > Task :processResources UP-TO-DATE
+     > Task :classes UP-TO-DATE
+     … +18 lines (ctrl+o to expand)
+  ⎿  (timeout 5m)
+
+  Searched for 3 patterns (ctrl+o to expand)
+
+● Spring needs an unambiguous constructor. I'll drop the primitive constructor
+  and update the test to pass a WebhookDispatcherProperties instance.
+
+● Update(src/main/java/dev/brenzo/payment_application/application/service/Webhoo
+        kDispatchService.java)
+  ⎿  Added 3 lines, removed 13 lines
+      24                                    WebhookSender sender,
+      25                                    Clock clock,
+      26                                    WebhookDispatcherProperties p
+          rops) {
+      27 -        this(deliveries, sender, clock,                        
+      28 -                props.getBatchSize(), props.getMaxAttempts(), p
+         -rops.getBackoffCapSeconds());                                  
+      29 -    }                                                          
+      30 -                                                               
+      31 -    public WebhookDispatchService(WebhookDeliveryRepository del
+         -iveries,                                                       
+      32 -                                  WebhookSender sender,        
+      33 -                                  Clock clock,                 
+      34 -                                  int batchSize,               
+      35 -                                  int maxAttempts,             
+      36 -                                  int backoffCapSeconds) {     
+      27          this.deliveries = deliveries;
+      28          this.sender = sender;
+      29          this.clock = clock;
+      40 -        this.batchSize = batchSize;                            
+      41 -        this.maxAttempts = maxAttempts;                        
+      42 -        this.backoffCapSeconds = backoffCapSeconds;            
+      30 +        this.batchSize = props.getBatchSize();                 
+      31 +        this.maxAttempts = props.getMaxAttempts();             
+      32 +        this.backoffCapSeconds = props.getBackoffCapSeconds(); 
+      33      }
+      34  
+      35      public DispatchSummary dispatchBatch() {
+
+● Update(src/test/java/dev/brenzo/payment_application/application/service/Webhoo
+        kDispatchServiceTest.java)
+  ⎿  Added 1 line
+      1  package dev.brenzo.payment_application.application.service;
+      2  
+      3 +import dev.brenzo.payment_application.adapter.config.WebhookDisp
+        +atcherProperties;                                               
+      4  import dev.brenzo.payment_application.application.port.out.Webho
+         okSender;
+      5  import dev.brenzo.payment_application.application.service.Webhoo
+         kDispatchService.DispatchSummary;
+      6  import dev.brenzo.payment_application.domain.webhook.DeliverySta
+         tus;
+
+● Update(src/test/java/dev/brenzo/payment_application/application/service/Webhoo
+        kDispatchServiceTest.java)
+  ⎿  Added 5 lines, removed 1 line
+      33          clock = new FixedClock(T0);
+      34          deliveries = new InMemoryWebhookDeliveryRepository(cloc
+          k);
+      35          sender = new ProgrammableSender();
+      36 -        dispatcher = new WebhookDispatchService(deliveries, sen
+         -der, clock, 50, 5, 3600);                                      
+      36 +        WebhookDispatcherProperties props = new WebhookDispatch
+         +erProperties();                                                
+      37 +        props.setBatchSize(50);                                
+      38 +        props.setMaxAttempts(5);                               
+      39 +        props.setBackoffCapSeconds(3600);                      
+      40 +        dispatcher = new WebhookDispatchService(deliveries, sen
+         +der, clock, props);                                            
+      41      }
+      42  
+      43      private WebhookDelivery enqueue(String url) {
+
+● Bash(./gradlew test --tests
+      "dev.brenzo.payment_application.integration.PaymentEndToEndTest" --tests
+      "dev.brenzo.payment_application.application.service.WebhookDispa…)
+  ⎿  > Task :compileJava
+     > Task :processResources UP-TO-DATE
+     > Task :classes
+     … +17 lines (ctrl+o to expand)
+  ⎿  (timeout 5m)
+
+● Integration test green. Run the full test suite once more to make sure nothing
+   else regressed.
+
+● Bash(./gradlew test --rerun-tasks 2>&1 | tail -20)
+  ⎿  > Task :compileJava
+     > Task :processResources
+     > Task :classes
+     … +17 lines (ctrl+o to expand)
+  ⎿  (timeout 5m)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● All 58 tests pass (57 unit + 1 TestContainers integration).
+
+  Summary of changes:
+
+  Deleted 14 files: 6 use-case interfaces (*UseCase), 3 trivial out-ports
+  (Clock, IdGenerator, EventSerializer) with their adapters (SystemClock,
+  RandomIdGenerator, JacksonEventSerializer), ApplicationServiceConfig, and
+  JacksonEventSerializerTest. Removed three now-empty packages.
+
+  Modified:
+  - PaymentService, WebhookService, WebhookDispatchService are now @Service
+  beans, no longer implements use-case interfaces. They take java.time.Clock,
+  Supplier<UUID>, and (for PaymentService) ObjectMapper directly.
+  WebhookDispatchService takes WebhookDispatcherProperties directly.
+  CreatePaymentCommand is nested in PaymentService.
+  - PaymentApplication is now the composition root: @EnableScheduling,
+  @EnableConfigurationProperties, plus @Bean methods for Clock and
+  Supplier<UUID>.
+  - Controllers and the dispatcher scheduler depend on the concrete service
+  classes.
+  - Test helpers FixedClock and SequentialIdGenerator rebased on java.time.Clock
+   and Supplier<UUID> (kept by name and API; method names updated to
+  instant()/get()).
+  - PaymentServiceTest injects a real ObjectMapper; the event-shape test now
+  parses the actual JSON. Controller tests mock the concrete services.
+  WebhookDispatchServiceTest constructs a WebhookDispatcherProperties for the
+  dispatcher.
+
+  One deviation from the plan: FixedClock and SequentialIdGenerator were kept
+  (rebased on JDK types) rather than deleted, because WebhookDispatchServiceTest
+   mutates the clock between dispatch batches — Clock.fixed() is immutable. The
+  classes are now thin shims over JDK types.
+
+✻ Brewed for 10m 36s
+
+※ recap: Refactored the payment app to remove application/adapter boilerplate — dropped 14 files (use-case interfaces, trivial ports, ApplicationServiceConfig), wired services with @Service, and all 58 tests pass. Next: review the diff or commit. (disable recaps in /config)
+
+❯ update the readme with the new architectural changes                          
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+       7  - Delivers webhooks via a **transactional outbox + scheduled di
+          spatcher** with exponential backoff. Delivery state lives in Po
+          stgres so retries survive restarts.
+       8  - Documents itself with **Springdoc OpenAPI** — both Swagger UI
+           and a downloadable spec are exposed at runtime.
+       9  
+      10 -The codebase is organised around **hexagonal architecture (port
+         -s & adapters)**: a Spring/JPA-free domain core, an application 
+         -layer of use-cases that depend only on ports, and adapters that
+         - plug Postgres, AES-GCM, the JDK HTTP client, and Spring MVC in
+         -to those ports.                                                
+      10 +The codebase is organised around a **lean hexagonal architectur
+         +e**: a Spring/JPA-free domain core, an application layer of ser
+         +vices that depend on ports for the boundaries that warrant abst
+         +racting (persistence, encryption, outbound HTTP), and adapters 
+         +that plug Postgres, AES-GCM, the JDK HTTP client, and Spring MV
+         +C into those ports. Trivial collaborators (the system clock, UU
+         +ID generation, JSON serialization) use JDK/library types direct
+         +ly rather than bespoke ports.                                  
+      11  
+      12  ---
+      13  
+
+● Update(README.md)
+  ⎿  Added 16 lines, removed 10 lines
+      115  - **Slice tests** (`@WebMvcTest`) cover the controllers and th
+           e `@RestControllerAdvice` error mapping.
+      116  - An **end-to-end integration test** boots the full Spring con
+           text against a Testcontainers Postgres, registers a webhook po
+           inting at an in-process HTTP server that fails the first call 
+           and succeeds the second, and asserts the payload shape, that r
+           etries are observed, and that the database column holds cipher
+           text rather than the PAN.
+      117  
+      118 -## Architecture (hexagonal)                                   
+      118 +## Architecture                                               
+      119  
+      120  ```
+      121  domain/                 pure Java — entities, value objects, d
+           omain services
+      122  application/
+      123 -  port/in/              use-case interfaces the application of
+          -fers                                                          
+      124 -  port/out/             ports the application needs (repos, en
+          -cryptor, sender, clock, …)                                    
+      125 -  service/              use-case implementations              
+      123 +  port/out/             ports for boundaries worth abstracting
+          +:                                                             
+      124 +                          PaymentRepository, WebhookSubscripti
+          +onRepository,                                                 
+      125 +                          WebhookDeliveryRepository, CardEncry
+          +ptor, WebhookSender                                           
+      126 +  service/              @Service classes (PaymentService, Webh
+          +ookService,                                                   
+      127 +                          WebhookDispatchService); controllers
+          + depend on these directly                                     
+      128  adapter/
+      129    in/web/               REST controllers, DTOs, exception hand
+           ler
+      130    out/persistence/      JPA entities + Spring Data + port adap
+           ters + AttributeConverter
+      131    out/crypto/           AES-GCM card encryptor
+      130 -  out/http/             RestClient webhook sender + Jackson ev
+          -ent serializer                                                
+      131 -  out/scheduling/       @Scheduled trigger that calls the disp
+          -atch use-case                                                 
+      132 -  out/time/             system clock                          
+      133 -  out/id/               UUID generator                        
+      134 -  config/               Spring wiring + @ConfigurationProperti
+          -es                                                            
+      132 +  out/http/             RestClient webhook sender             
+      133 +  out/scheduling/       @Scheduled trigger that calls the disp
+          +atch service                                                  
+      134 +  config/               @ConfigurationProperties beans        
+      135 +PaymentApplication      composition root: @SpringBootApplicati
+          +on, @EnableScheduling,                                        
+      136 +                          @EnableConfigurationProperties, @Bea
+          +n Clock + Supplier<UUID>                                      
+      137  ```
+      138  
+      137 -The domain has no Spring or JPA imports; the application layer
+          - uses Spring's `@Transactional` only as a small, well-isolated
+          - dependency.                                                  
+      139 +The domain has no Spring or JPA imports. The application layer
+          + uses Spring's `@Service` and `@Transactional` for wiring and 
+          +tx boundaries; everything else flows through constructor-injec
+          +ted ports.                                                    
+      140  
+      141 +**Why no port/in?** Use-case interfaces with one implementatio
+          +n each are pure ceremony — controllers and the scheduler depen
+          +d on the concrete service classes. Tests mock those classes vi
+          +a Mockito, and the `InMemory*` test doubles still cover the ou
+          +t-ports (`PaymentRepository`, etc.) that benefit from a fake. 
+      142 +                                                              
+      143 +**Why no Clock / IdGenerator / EventSerializer ports?** They w
+          +rap a single JDK or library call. The services take `java.time
+          +.Clock`, `Supplier<UUID>`, and `tools.jackson.databind.ObjectM
+          +apper` directly. Tests substitute `FixedClock` (a mutable `jav
+          +a.time.Clock`) and `SequentialIdGenerator` (a `Supplier<UUID>`
+          +) without an indirection layer.                               
+      144 +                                                              
+      145  ## AI assistance disclosure
+      146  
+      147  This solution was scaffolded and implemented with help from an
+            AI coding assistant. The architecture, code, tests, and migra
+           tions were produced collaboratively with the author.
+
+● Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+      112  Three layers:
+      113  
+      114  - **Unit tests** (no Spring, no DB) cover the domain core: Luh
+           n validator, `CardNumber` value object, `WebhookDelivery` retr
+           y/backoff transitions, plus the application services with in-m
+           emory port fakes.
+      115 -- **Slice tests** (`@WebMvcTest`) cover the controllers and th
+          -e `@RestControllerAdvice` error mapping.                      
+      115 +- **Slice tests** (`@WebMvcTest`) cover the controllers and th
+          +e `@RestControllerAdvice` error mapping. They use `@MockitoBea
+          +n` against the concrete service classes.                      
+      116  - An **end-to-end integration test** boots the full Spring con
+           text against a Testcontainers Postgres, registers a webhook po
+           inting at an in-process HTTP server that fails the first call 
+           and succeeds the second, and asserts the payload shape, that r
+           etries are observed, and that the database column holds cipher
+           text rather than the PAN.
+      117  
+      118  ## Architecture
+
+● Updated three sections of the README:
+
+  - Intro paragraph (line 10): reframed from strict ports-and-adapters to "lean
+  hexagonal" — ports are now described as covering only the boundaries worth
+  abstracting (persistence, encryption, outbound HTTP), with trivial
+  collaborators using JDK types directly.
+  - Architecture section: rewrote the directory tree to match reality (port/in/,
+   out/time/, out/id/ are gone; PaymentApplication is now the composition root).
+   Added two short rationale paragraphs explaining why the use-case interfaces
+  and the trivial out-ports were dropped.
+  - Tests section: noted that slice tests now mock the concrete service classes.
+
+✻ Churned for 47s
+
+※ recap: Refactored the payment app to drop incidental hexagonal scaffolding (single-impl ports, use-case interfaces, manual @Bean wiring); all 58 tests pass and the README is updated. Next: review the diff or commit. (disable recaps in /config)

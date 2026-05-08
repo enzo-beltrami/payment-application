@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew dependencies *)",
+      "Bash(./gradlew test *)",
+      "Bash(xargs -I{} unzip -l {})",
+      "Bash(docker info *)",
+      "Bash(xargs ls -1)",
+      "Bash(./gradlew compileJava compileTestJava)"
+    ]
+  }
+}

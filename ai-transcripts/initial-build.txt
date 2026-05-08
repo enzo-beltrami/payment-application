@@ -1,0 +1,1792 @@
+ ▐▛███▜▌   Claude Code v2.1.136
+▝▜█████▛▘  Sonnet 4.6 · Claude Pro
+  ▘▘ ▝▝    ~/code/payment-application/payment-application
+
+❯ /init                                                                         
+
+  Searched for 1 pattern, read 7 files, listed 1 directory (ctrl+o to expand)
+
+● This is an early-stage Spring Boot project with very little code yet. Let me
+  write a CLAUDE.md that captures the stack, conventions, and commands.
+
+● Write(CLAUDE.md)
+  ⎿  Wrote 52 lines to CLAUDE.md
+      1 # CLAUDE.md
+      2 
+      3 This file provides guidance to Claude Code (claude.ai/code) when 
+        working with code in this repository.
+      4 
+      5 ## Commands
+      6 
+      7 ```bash
+      8 # Build
+      9 ./gradlew build
+     … +51 lines (ctrl+o to expand)
+
+● CLAUDE.md created. Since this project is mostly a skeleton right now (just the
+   Spring Boot entry point and a context-loads test), I kept the file focused
+  on:
+
+  - Gradle commands for build/run/test, including how to target a single test
+  - The full tech stack and where each piece fits
+  - Database setup via Docker Compose auto-integration
+  - The package naming quirk (payment_application with underscores)
+  - A suggested layered architecture to follow as the project grows
+
+✻ Cogitated for 31s
+
+❯ make use of dtos and put validations there, lets maintain a clear separation  
+  of responsabilities following a hexagonal architecture                        
+
+● Let me read the challenge spec first to understand what needs to be built.
+
+  Read 1 file (ctrl+o to expand)
+
+● Now I have the full picture. This needs a complete hexagonal architecture
+  implementation with:
+  - Payments (create + list) with encrypted card numbers
+  - Dynamic webhook registration + async notification with retry
+  - DTOs with Bean Validation, clean domain/port/adapter separation
+
+  Let me generate an encryption key then build out everything.
+
+● Bash(openssl rand -base64 32)
+  ⎿  kAg4pv5NRYZRSNHsib3iG702LS9ZswMnCNUKhNOvaf8=
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ lets plan this out first                                                      
+
+● I already have full context from reading the codebase and spec. Let me write
+  the plan directly.
+
+● Updated plan
+  ⎿  /plan to preview
+  ⎿  User rejected Claude's plan:
+     ╭─────────────────────────────────────────────────────────────────────────╮
+     │ Plan: Hexagonal Architecture — Payment Application                      │
+     │                                                                         │
+     │ Context                                                                 │
+     │                                                                         │
+     │ The challenge requires a payment API (create + list payments with       │
+     │ encrypted card numbers) and a dynamic webhook registration system that  │
+     │ fires asynchronously after each payment. The user wants hexagonal       │
+     │ (ports & adapters) architecture with DTOs carrying all validation       │
+     │ logic, keeping the domain pure.                                         │
+     │                                                                         │
+     │ The project is currently a bare Spring Boot 4.0.6 / Java 21 / Gradle    │
+     │ skeleton with only PaymentApplication.java and a context-loads test.    │
+     │ PostgreSQL runs via Docker Compose. Lombok and SpringDoc OpenAPI are    │
+     │ already in build.gradle.kts.                                            │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Package Structure                                                       │
+     │                                                                         │
+     │ dev.brenzo.payment_application                                          │
+     │ ├── domain/                                                             │
+     │ │   ├── model/          Payment.java, Webhook.java   (pure Java, no     │
+     │ framework)                                                              │
+     │ │   └── port/                                                           │
+     │ │       ├── in/         use-case interfaces + command records           │
+     │ │       └── out/        repository + notifier interfaces                │
+     │ ├── application/                                                        │
+     │ │   └── service/        PaymentService, WebhookService  (orchestrate    │
+     │ ports)                                                                  │
+     │ ├── adapter/                                                            │
+     │ │   ├── in/web/         controllers + dto/  (validation lives here)     │
+     │ │   └── out/                                                            │
+     │ │       ├── persistence/ JPA entities, Spring Data repos, adapters,     │
+     │ CardEncryptionService                                                   │
+     │ │       └── http/        WebhookHttpAdapter (async + retry) + dto/      │
+     │ └── config/             AppConfig (@EnableAsync, RestClient bean)       │
+     │                                                                         │
+     │ Dependency rule: domain ← application ← adapters. Domain has zero       │
+     │ Spring/JPA imports.                                                     │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Files to Create / Modify                                                │
+     │                                                                         │
+     │ build.gradle.kts (modify)                                               │
+     │                                                                         │
+     │ Add spring-boot-starter-validation for Jakarta Bean Validation.         │
+     │                                                                         │
+     │ application.properties (modify)                                         │
+     │                                                                         │
+     │ spring.jpa.hibernate.ddl-auto=update                                    │
+     │ spring.jpa.open-in-view=false                                           │
+     │ app.encryption.key=<generated-base64-32-byte-key>                       │
+     │                                                                         │
+     │ Domain layer (pure Java records/classes, no annotations except Lombok)  │
+     │                                                                         │
+     │ ┌─────────────────────────────────────┬──────────────────────────────── │
+     │ ───┐                                                                    │
+     │ │                File                 │              Purpose            │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │                                     │ @Builder @Getter — id,          │
+     │ firstName, │                                                            │
+     │ │ domain/model/Payment.java           │  lastName, zipCode, cardNumber, │
+     │    │                                                                    │
+     │ │                                     │ createdAt;                      │
+     │ getMaskedCardNumber()  │                                                │
+     │ │                                     │ helper                          │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ domain/model/Webhook.java           │ @Builder @Getter — id, url,     │
+     │    │                                                                    │
+     │ │                                     │ registeredAt                    │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ domain/port/in/CreatePaymentCommand │ record: firstName, lastName,    │
+     │    │                                                                    │
+     │ │ .java                               │ zipCode, cardNumber             │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ domain/port/in/CreatePaymentUseCase │ Payment                         │
+     │ createPayment(CreatePayme │                                             │
+     │ │ .java                               │ ntCommand)                      │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ domain/port/in/ListPaymentsUseCase. │ List<Payment> listPayments()    │
+     │    │                                                                    │
+     │ │ java                                │                                 │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ domain/port/in/RegisterWebhookComma │ record: url                     │
+     │    │                                                                    │
+     │ │ nd.java                             │                                 │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ domain/port/in/RegisterWebhookUseCa │ Webhook                         │
+     │ registerWebhook(RegisterW │                                             │
+     │ │ se.java                             │ ebhookCommand)                  │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ domain/port/out/PaymentRepository.j │ save, findAll                   │
+     │    │                                                                    │
+     │ │ ava                                 │                                 │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ domain/port/out/WebhookRepository.j │ save, findAll                   │
+     │    │                                                                    │
+     │ │ ava                                 │                                 │
+     │    │                                                                    │
+     │ ├─────────────────────────────────────┼──────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ domain/port/out/WebhookNotifier.jav │ void notify(Webhook, Payment)   │
+     │    │                                                                    │
+     │ │ a                                   │                                 │
+     │    │                                                                    │
+     │ └─────────────────────────────────────┴──────────────────────────────── │
+     │ ───┘                                                                    │
+     │                                                                         │
+     │ Application layer                                                       │
+     │                                                                         │
+     │ File: application/service/PaymentService.java                           │
+     │ Purpose: implements CreatePaymentUseCase + ListPaymentsUseCase; saves   │
+     │ payment                                                                 │
+     │   then fires webhook notifications (no @Transactional at service level  │
+     │ —                                                                       │
+     │   persistence adapter owns its own transaction, so notifications run    │
+     │   post-commit)                                                          │
+     │ ────────────────────────────────────────                                │
+     │ File: application/service/WebhookService.java                           │
+     │ Purpose: implements RegisterWebhookUseCase                              │
+     │                                                                         │
+     │ Adapter — in (web)                                                      │
+     │                                                                         │
+     │ File: adapter/in/web/dto/CreatePaymentRequest.java                      │
+     │ Purpose: record with @NotBlank, @CreditCardNumber (Luhn), @Pattern for  │
+     │ zip                                                                     │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/dto/CreatePaymentResponse.java                     │
+     │ Purpose: record with maskedCardNumber                                   │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/dto/RegisterWebhookRequest.java                    │
+     │ Purpose: record with @NotBlank @URL                                     │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/dto/RegisterWebhookResponse.java                   │
+     │ Purpose: record                                                         │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/PaymentController.java                             │
+     │ Purpose: POST /api/payments → 201, GET /api/payments → 200              │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/WebhookController.java                             │
+     │ Purpose: POST /api/webhooks → 201                                       │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/GlobalExceptionHandler.java                        │
+     │ Purpose: @RestControllerAdvice; maps MethodArgumentNotValidException →  │
+     │ RFC 9457                                                                │
+     │   ProblemDetail 400 with field-level error map                          │
+     │                                                                         │
+     │ Adapter — out (persistence)                                             │
+     │                                                                         │
+     │ ┌──────────────────────────────────────────────┬─────────────────────── │
+     │ ───┐                                                                    │
+     │ │                     File                     │         Purpose        │
+     │    │                                                                    │
+     │ ├──────────────────────────────────────────────┼─────────────────────── │
+     │ ───┤                                                                    │
+     │ │ adapter/out/persistence/PaymentJpaEntity.jav │ @Entity — stores       │
+     │    │                                                                    │
+     │ │ a                                            │ encrypted card number  │
+     │    │                                                                    │
+     │ ├──────────────────────────────────────────────┼─────────────────────── │
+     │ ───┤                                                                    │
+     │ │ adapter/out/persistence/WebhookJpaEntity.jav │ @Entity                │
+     │    │                                                                    │
+     │ │ a                                            │                        │
+     │    │                                                                    │
+     │ ├──────────────────────────────────────────────┼─────────────────────── │
+     │ ───┤                                                                    │
+     │ │ adapter/out/persistence/PaymentJpaRepository │ package-private Spring │
+     │    │                                                                    │
+     │ │ .java                                        │ Data interface         │
+     │    │                                                                    │
+     │ ├──────────────────────────────────────────────┼─────────────────────── │
+     │ ───┤                                                                    │
+     │ │ adapter/out/persistence/WebhookJpaRepository │ package-private Spring │
+     │    │                                                                    │
+     │ │ .java                                        │ Data interface         │
+     │    │                                                                    │
+     │ ├──────────────────────────────────────────────┼─────────────────────── │
+     │ ───┤                                                                    │
+     │ │                                              │ AES-256-CBC; encrypts  │
+     │ on │                                                                    │
+     │ │ adapter/out/persistence/CardEncryptionServic │  save, decrypts on     │
+     │ load; │                                                                 │
+     │ │ e.java                                       │  IV prepended as       │
+     │ base64( │                                                               │
+     │ │                                              │ iv):base64(ciphertext) │
+     │    │                                                                    │
+     │ ├──────────────────────────────────────────────┼─────────────────────── │
+     │ ───┤                                                                    │
+     │ │                                              │ implements             │
+     │    │                                                                    │
+     │ │ adapter/out/persistence/PaymentPersistenceAd │ PaymentRepository;     │
+     │    │                                                                    │
+     │ │ apter.java                                   │ delegates encryption   │
+     │ to  │                                                                   │
+     │ │                                              │ CardEncryptionService  │
+     │    │                                                                    │
+     │ ├──────────────────────────────────────────────┼─────────────────────── │
+     │ ───┤                                                                    │
+     │ │ adapter/out/persistence/WebhookPersistenceAd │ implements             │
+     │    │                                                                    │
+     │ │ apter.java                                   │ WebhookRepository      │
+     │    │                                                                    │
+     │ └──────────────────────────────────────────────┴─────────────────────── │
+     │ ───┘                                                                    │
+     │                                                                         │
+     │ Adapter — out (http)                                                    │
+     │                                                                         │
+     │ File: adapter/out/http/dto/PaymentEventPayload.java                     │
+     │ Purpose: record sent as webhook body (uses maskedCardNumber)            │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/out/http/WebhookHttpAdapter.java                          │
+     │ Purpose: @Async + 3-attempt exponential backoff; uses Spring            │
+     │ RestClient; logs                                                        │
+     │   warn per failure and error on exhaustion                              │
+     │                                                                         │
+     │ Config                                                                  │
+     │                                                                         │
+     │ ┌───────────────────────┬───────────────────────────────┐               │
+     │ │         File          │            Purpose            │               │
+     │ ├───────────────────────┼───────────────────────────────┤               │
+     │ │ config/AppConfig.java │ @EnableAsync, RestClient bean │               │
+     │ └───────────────────────┴───────────────────────────────┘               │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Key Design Decisions                                                    │
+     │                                                                         │
+     │ 1. Validation in DTOs only — CreatePaymentRequest /                     │
+     │ RegisterWebhookRequest hold all jakarta.validation annotations. Domain  │
+     │ commands are plain records with no validation logic.                    │
+     │ 2. Card encryption at persistence boundary — CardEncryptionService      │
+     │ (package-private, lives in persistence adapter package) transparently   │
+     │ encrypts on write and decrypts on read. Domain Payment always holds the │
+     │  raw number in memory. Response DTOs always expose only the masked      │
+     │ number.                                                                 │
+     │ 3. Webhook resilience — @Async decouples payment creation from webhook  │
+     │ delivery. 3 attempts with 1s / 2s / 4s backoff (exponential). Failure   │
+     │ after all attempts is logged as error but does not affect the payment   │
+     │ response.                                                               │
+     │ 4. No @Transactional at service level — Spring Data's own               │
+     │ @Transactional on save/findAll is sufficient. This ensures the payment  │
+     │ row is committed before the async webhook thread reads the database,    │
+     │ avoiding phantom-read issues.                                           │
+     │ 5. spring.jpa.open-in-view=false — enforces that no lazy loading leaks  │
+     │ outside service boundaries.                                             │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Verification                                                            │
+     │                                                                         │
+     │ # 1. Start app (boots Docker Compose Postgres automatically)            │
+     │ ./gradlew bootRun                                                       │
+     │                                                                         │
+     │ # 2. Register a webhook (use a requestbin or similar)                   │
+     │ curl -X POST http://localhost:8080/api/webhooks \                       │
+     │   -H "Content-Type: application/json" \                                 │
+     │   -d '{"url":"https://webhook.site/<your-id>"}'                         │
+     │                                                                         │
+     │ # 3. Create a payment                                                   │
+     │ curl -X POST http://localhost:8080/api/payments \                       │
+     │   -H "Content-Type: application/json" \                                 │
+     │   -d '{"firstName":"John","lastName":"Doe","zipCode":"90210","cardNumbe │
+     │ r":"4111111111111111"}'                                                 │
+     │                                                                         │
+     │ # 4. List payments (card number should be masked)                       │
+     │ curl http://localhost:8080/api/payments                                 │
+     │                                                                         │
+     │ # 5. Check Swagger UI                                                   │
+     │ open http://localhost:8080/swagger-ui.html                              │
+     │                                                                         │
+     │ # 6. Run tests                                                          │
+     │ ./gradlew test                                                          │
+     ╰─────────────────────────────────────────────────────────────────────────╯
+
+● Good feedback. Let me update the plan to reflect those three changes.
+
+● Updated plan
+  ⎿  /plan to preview
+  ⎿  User rejected Claude's plan:
+     ╭─────────────────────────────────────────────────────────────────────────╮
+     │ Plan: Hexagonal Architecture — Payment Application                      │
+     │                                                                         │
+     │ Context                                                                 │
+     │                                                                         │
+     │ The challenge requires a payment API (create + list payments with       │
+     │ encrypted card numbers) and a dynamic webhook registration system that  │
+     │ fires asynchronously after each payment. The user wants hexagonal       │
+     │ (ports & adapters) architecture with DTOs carrying all validation       │
+     │ logic, keeping the domain pure.                                         │
+     │                                                                         │
+     │ The project is currently a bare Spring Boot 4.0.6 / Java 21 / Gradle    │
+     │ skeleton with only PaymentApplication.java and a context-loads test.    │
+     │ PostgreSQL runs via Docker Compose. Lombok and SpringDoc OpenAPI are    │
+     │ already in build.gradle.kts.                                            │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Package Structure                                                       │
+     │                                                                         │
+     │ dev.brenzo.payment_application                                          │
+     │ ├── domain/                                                             │
+     │ │   ├── model/          Payment.java, Webhook.java   (pure Java, no     │
+     │ framework)                                                              │
+     │ │   └── port/                                                           │
+     │ │       ├── in/         use-case interfaces + command records           │
+     │ │       └── out/        repository + notifier interfaces                │
+     │ ├── application/                                                        │
+     │ │   └── service/        PaymentService, WebhookService  (orchestrate    │
+     │ ports)                                                                  │
+     │ ├── adapter/                                                            │
+     │ │   ├── in/web/         controllers + dto/  (validation lives here)     │
+     │ │   └── out/                                                            │
+     │ │       ├── persistence/ JPA entities, Spring Data repos, adapters,     │
+     │ CardEncryptionService                                                   │
+     │ │       └── http/        WebhookHttpAdapter (async + retry) + dto/      │
+     │ ├── config/             AppConfig (@EnableAsync, RestClient bean)       │
+     │ └── (test mirror of main package structure)                             │
+     │                                                                         │
+     │ Dependency rule: domain ← application ← adapters. Domain has zero       │
+     │ Spring/JPA imports.                                                     │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Card Number Strategy                                                    │
+     │                                                                         │
+     │ Never decrypt on read. The raw card number exists in memory only during │
+     │  the creation flow. The DB stores two columns per payment:              │
+     │ - card_number — AES-256-CBC encrypted full PAN (never read back after   │
+     │ write)                                                                  │
+     │ - last_four_digits — plain text, used for display on list endpoint      │
+     │                                                                         │
+     │ Payment domain model carries both cardNumber (nullable — populated only │
+     │  during creation) and lastFourDigits (always present after creation).   │
+     │ getMaskedCardNumber() uses lastFourDigits only: "**** **** **** " +     │
+     │ lastFourDigits.                                                         │
+     │                                                                         │
+     │ CardEncryptionService exposes only encrypt(). No decrypt() is ever      │
+     │ needed.                                                                 │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Files to Create / Modify                                                │
+     │                                                                         │
+     │ build.gradle.kts (modify)                                               │
+     │                                                                         │
+     │ Add spring-boot-starter-validation for Jakarta Bean Validation.         │
+     │                                                                         │
+     │ application.properties (modify)                                         │
+     │                                                                         │
+     │ spring.jpa.hibernate.ddl-auto=update                                    │
+     │ spring.jpa.open-in-view=false                                           │
+     │ app.encryption.key=<generated-base64-32-byte-key>                       │
+     │                                                                         │
+     │ Domain layer (pure Java, Lombok only)                                   │
+     │                                                                         │
+     │ File: domain/model/Payment.java                                         │
+     │ Purpose: @Builder @Getter — id, firstName, lastName, zipCode,           │
+     │ cardNumber                                                              │
+     │   (nullable), lastFourDigits, createdAt; getMaskedCardNumber() uses     │
+     │   lastFourDigits                                                        │
+     │ ────────────────────────────────────────                                │
+     │ File: domain/model/Webhook.java                                         │
+     │ Purpose: @Builder @Getter — id, url, registeredAt                       │
+     │ ────────────────────────────────────────                                │
+     │ File: domain/port/in/CreatePaymentCommand.java                          │
+     │ Purpose: record: firstName, lastName, zipCode, cardNumber               │
+     │ ────────────────────────────────────────                                │
+     │ File: domain/port/in/CreatePaymentUseCase.java                          │
+     │ Purpose: Payment createPayment(CreatePaymentCommand)                    │
+     │ ────────────────────────────────────────                                │
+     │ File: domain/port/in/ListPaymentsUseCase.java                           │
+     │ Purpose: List<Payment> listPayments()                                   │
+     │ ────────────────────────────────────────                                │
+     │ File: domain/port/in/RegisterWebhookCommand.java                        │
+     │ Purpose: record: url                                                    │
+     │ ────────────────────────────────────────                                │
+     │ File: domain/port/in/RegisterWebhookUseCase.java                        │
+     │ Purpose: Webhook registerWebhook(RegisterWebhookCommand)                │
+     │ ────────────────────────────────────────                                │
+     │ File: domain/port/out/PaymentRepository.java                            │
+     │ Purpose: save, findAll                                                  │
+     │ ────────────────────────────────────────                                │
+     │ File: domain/port/out/WebhookRepository.java                            │
+     │ Purpose: save, findAll                                                  │
+     │ ────────────────────────────────────────                                │
+     │ File: domain/port/out/WebhookNotifier.java                              │
+     │ Purpose: void notify(Webhook, Payment)                                  │
+     │                                                                         │
+     │ Application layer                                                       │
+     │                                                                         │
+     │ File: application/service/PaymentService.java                           │
+     │ Purpose: Extracts lastFourDigits from command, builds Payment, saves,   │
+     │ fires                                                                   │
+     │   webhook notifications. No @Transactional at service level —           │
+     │ persistence                                                             │
+     │   adapter owns its own transaction, so notifications run post-commit    │
+     │ ────────────────────────────────────────                                │
+     │ File: application/service/WebhookService.java                           │
+     │ Purpose: implements RegisterWebhookUseCase                              │
+     │                                                                         │
+     │ Adapter — in (web)                                                      │
+     │                                                                         │
+     │ File: adapter/in/web/dto/CreatePaymentRequest.java                      │
+     │ Purpose: record: @NotBlank firstName/lastName, @Pattern(\\d{4,10})      │
+     │ zipCode,                                                                │
+     │   @NotBlank @CreditCardNumber cardNumber                                │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/dto/CreatePaymentResponse.java                     │
+     │ Purpose: record with maskedCardNumber (never raw)                       │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/dto/RegisterWebhookRequest.java                    │
+     │ Purpose: record: @NotBlank @URL url                                     │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/dto/RegisterWebhookResponse.java                   │
+     │ Purpose: record                                                         │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/PaymentController.java                             │
+     │ Purpose: POST /api/payments → 201, GET /api/payments → 200              │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/WebhookController.java                             │
+     │ Purpose: POST /api/webhooks → 201                                       │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/in/web/GlobalExceptionHandler.java                        │
+     │ Purpose: @RestControllerAdvice; maps MethodArgumentNotValidException →  │
+     │ RFC 9457                                                                │
+     │   ProblemDetail 400 with field-level error map                          │
+     │                                                                         │
+     │ Adapter — out (persistence)                                             │
+     │                                                                         │
+     │ File: adapter/out/persistence/PaymentJpaEntity.java                     │
+     │ Purpose: @Entity — columns: id, firstName, lastName, zipCode,           │
+     │ cardNumber                                                              │
+     │   (encrypted), lastFourDigits (plain), createdAt                        │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/out/persistence/WebhookJpaEntity.java                     │
+     │ Purpose: @Entity                                                        │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/out/persistence/PaymentJpaRepository.java                 │
+     │ Purpose: package-private Spring Data interface                          │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/out/persistence/WebhookJpaRepository.java                 │
+     │ Purpose: package-private Spring Data interface                          │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/out/persistence/CardEncryptionService.java                │
+     │ Purpose: AES-256-CBC; encrypt-only used publicly; stores                │
+     │   base64(iv):base64(ciphertext)                                         │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/out/persistence/PaymentPersistenceAdapter.java            │
+     │ Purpose: save(): extracts lastFour from raw cardNumber, encrypts,       │
+     │ stores both.                                                            │
+     │   findAll() → toDomain sets cardNumber=null, uses stored lastFourDigits │
+     │ ────────────────────────────────────────                                │
+     │ File: adapter/out/persistence/WebhookPersistenceAdapter.java            │
+     │ Purpose: implements WebhookRepository                                   │
+     │                                                                         │
+     │ Adapter — out (http)                                                    │
+     │                                                                         │
+     │ ┌───────────────────────────────────────────────┬────────────────────── │
+     │ ────┐                                                                   │
+     │ │                     File                      │         Purpose       │
+     │     │                                                                   │
+     │ ├───────────────────────────────────────────────┼────────────────────── │
+     │ ────┤                                                                   │
+     │ │                                               │ record sent as        │
+     │ webhook   │                                                             │
+     │ │ adapter/out/http/dto/PaymentEventPayload.java │ body — uses           │
+     │     │                                                                   │
+     │ │                                               │ maskedCardNumber, no  │
+     │ raw │                                                                   │
+     │ │                                               │  card                 │
+     │     │                                                                   │
+     │ ├───────────────────────────────────────────────┼────────────────────── │
+     │ ────┤                                                                   │
+     │ │                                               │ @Async + 3-attempt    │
+     │     │                                                                   │
+     │ │ adapter/out/http/WebhookHttpAdapter.java      │ exponential backoff   │
+     │     │                                                                   │
+     │ │                                               │ (500ms / 1s / 2s);    │
+     │     │                                                                   │
+     │ │                                               │ Spring RestClient     │
+     │     │                                                                   │
+     │ └───────────────────────────────────────────────┴────────────────────── │
+     │ ────┘                                                                   │
+     │                                                                         │
+     │ Config                                                                  │
+     │                                                                         │
+     │ ┌───────────────────────┬───────────────────────────────┐               │
+     │ │         File          │            Purpose            │               │
+     │ ├───────────────────────┼───────────────────────────────┤               │
+     │ │ config/AppConfig.java │ @EnableAsync, RestClient bean │               │
+     │ └───────────────────────┴───────────────────────────────┘               │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Unit Tests                                                              │
+     │                                                                         │
+     │ Tests mirror the main source tree under src/test/.                      │
+     │                                                                         │
+     │ Test Class: application/service/PaymentServiceTest.java                 │
+     │ What it covers: createPayment builds correct domain object, calls       │
+     │   paymentRepository.save, calls webhookNotifier.notify for each         │
+     │ registered                                                              │
+     │   webhook; listPayments delegates to repo. Use Mockito mocks for all    │
+     │ ports.                                                                  │
+     │ ────────────────────────────────────────                                │
+     │ Test Class: application/service/WebhookServiceTest.java                 │
+     │ What it covers: registerWebhook builds correct Webhook and delegates to │
+     │  repo.                                                                  │
+     │ ────────────────────────────────────────                                │
+     │ Test Class: adapter/out/persistence/CardEncryptionServiceTest.java      │
+     │ What it covers: encrypt produces a two-part base64 string; same         │
+     │ plaintext                                                               │
+     │   encrypted twice produces different ciphertexts (IV randomness).       │
+     │ ────────────────────────────────────────                                │
+     │ Test Class: adapter/in/web/PaymentControllerTest.java                   │
+     │ What it covers: @WebMvcTest — valid request → 201; missing field → 400  │
+     │ with                                                                    │
+     │   error map; invalid card → 400.                                        │
+     │ ────────────────────────────────────────                                │
+     │ Test Class: adapter/in/web/WebhookControllerTest.java                   │
+     │ What it covers: @WebMvcTest — valid URL → 201; blank/invalid URL → 400. │
+     │                                                                         │
+     │ Tests use JUnit 5 (@Test) and Mockito (already on classpath via         │
+     │ spring-boot-starter-test).                                              │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Key Design Decisions                                                    │
+     │                                                                         │
+     │ 1. Validation in DTOs only — @CreditCardNumber (Luhn), @Pattern, @URL   │
+     │ live on request records. Domain commands are plain records with no      │
+     │ constraints.                                                            │
+     │ 2. Encrypt-only card storage — raw PAN exists only in memory during the │
+     │  request lifecycle. lastFourDigits stored plain for display.            │
+     │ CardEncryptionService never exposes a decrypt method in normal flow.    │
+     │ 3. Webhook resilience — @Async decouples payment from delivery. 3       │
+     │ attempts with exponential backoff. Failure logged as error, payment     │
+     │ response unaffected.                                                    │
+     │ 4. No @Transactional at service level — Spring Data's built-in          │
+     │ transactions on save/findAll are sufficient. Ensures DB commit happens  │
+     │ before async webhook thread fires.                                      │
+     │ 5. spring.jpa.open-in-view=false — no lazy loading leaking outside      │
+     │ service boundaries.                                                     │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Verification                                                            │
+     │                                                                         │
+     │ # Start app                                                             │
+     │ ./gradlew bootRun                                                       │
+     │                                                                         │
+     │ # Register a webhook                                                    │
+     │ curl -X POST http://localhost:8080/api/webhooks \                       │
+     │   -H "Content-Type: application/json" \                                 │
+     │   -d '{"url":"https://webhook.site/<your-id>"}'                         │
+     │                                                                         │
+     │ # Create a payment (4111111111111111 passes Luhn check)                 │
+     │ curl -X POST http://localhost:8080/api/payments \                       │
+     │   -H "Content-Type: application/json" \                                 │
+     │   -d '{"firstName":"John","lastName":"Doe","zipCode":"90210","cardNumbe │
+     │ r":"4111111111111111"}'                                                 │
+     │                                                                         │
+     │ # List payments — response shows "**** **** **** 1111", no raw card     │
+     │ curl http://localhost:8080/api/payments                                 │
+     │                                                                         │
+     │ # Swagger UI                                                            │
+     │ open http://localhost:8080/swagger-ui.html                              │
+     │                                                                         │
+     │ # Run all tests                                                         │
+     │ ./gradlew test                                                          │
+     ╰─────────────────────────────────────────────────────────────────────────╯
+
+● Great call — the outbox pattern is the right solution. Let me update the plan
+  to reflect this.
+
+● Updated plan
+  ⎿  /plan to preview
+● User approved Claude's plan
+  ⎿  Plan saved to: ~/.claude/plans/lets-plan-this-out-indexed-dusk.md · /plan 
+     to edit
+     Plan: Hexagonal Architecture — Payment Application
+
+     Context
+
+     The challenge requires a payment API (create + list with encrypted card
+     numbers) and a resilient dynamic webhook system. The user wants hexagonal
+     architecture, DTOs with validation, and the transactional outbox pattern
+     for webhooks to prevent dual-write errors (payment saved but notification
+     lost, or notification queued but payment rolled back).
+
+     The project is currently a bare Spring Boot 4.0.6 / Java 21 / Gradle
+     skeleton. PostgreSQL runs via Docker Compose. Lombok and SpringDoc OpenAPI
+     are already in build.gradle.kts.
+
+     ---
+     Package Structure
+
+     dev.brenzo.payment_application
+     ├── domain/
+     │   ├── model/          Payment, Webhook, PaymentEvent, WebhookTransaction,
+      WebhookTransactionStatus
+     │   └── port/
+     │       ├── in/         use-case interfaces + command records
+     │       └── out/        PaymentRepository, WebhookRepository,
+     WebhookTransactionRepository, WebhookNotifier
+     ├── application/
+     │   └── service/        PaymentService, WebhookService,
+     WebhookDeliveryService
+     ├── adapter/
+     │   ├── in/
+     │   │   ├── web/        controllers + dto/
+     │   │   └── scheduler/  WebhookDeliveryScheduler (@Scheduled driver)
+     │   └── out/
+     │       ├── persistence/ JPA entities, Spring Data repos, adapters,
+     CardEncryptionService
+     │       └── http/        WebhookHttpAdapter
+     └── config/             AppConfig
+
+     ---
+     Outbox Pattern Flow
+
+     POST /api/payments
+            │
+            ▼
+       PaymentService.createPayment()  ◄── @Transactional
+     ──────────────────────┐
+            │  1. Save Payment
+        │
+            │  2. For each Webhook → save WebhookTransaction(PENDING)
+       │
+            └─── Both writes in ONE transaction (atomic)
+     ────────────────────────┘
+            │
+            ▼
+      Response returned to client immediately
+
+            ┌── every 30 s ──┐
+            ▼                │
+       WebhookDeliveryScheduler
+            │
+            ▼
+       WebhookDeliveryService.processPendingWebhooks()
+            │  Load PENDING transactions where nextRetryAt <= now
+            │  For each:
+            │    success → status = DELIVERED
+            │    failure → attempts++, nextRetryAt = exponential backoff
+            │    attempts >= MAX (5) → status = FAILED
+            ▼
+       WebhookHttpAdapter.notify(url, PaymentEvent)  →  external endpoint
+
+     No @Async needed — delivery is fully decoupled via the outbox table.
+
+     ---
+     Card Number Strategy
+
+     Never decrypt on read. The raw card number exists in memory only during
+     creation.
+
+     - DB stores two columns: card_number (AES-256-CBC encrypted) and
+     last_four_digits (plain text)
+     - Payment domain model carries lastFourDigits (always) and cardNumber
+     (nullable — only populated from the CreatePaymentCommand)
+     - getMaskedCardNumber() → "**** **** **** " + lastFourDigits
+     - CardEncryptionService exposes only encrypt(). No decrypt path exists in
+     production code.
+
+     ---
+     Files to Create / Modify
+
+     build.gradle.kts (modify)
+
+     Add spring-boot-starter-validation.
+
+     application.properties (modify)
+
+     spring.jpa.hibernate.ddl-auto=update
+     spring.jpa.open-in-view=false
+     app.encryption.key=<generated-base64-32-byte-key>
+     app.webhook.max-attempts=5
+     app.webhook.scheduler-delay-ms=30000
+
+     ---
+     Domain layer (pure Java, Lombok only — zero Spring/JPA imports)
+
+     File: domain/model/Payment.java
+     Purpose: @Builder @Getter — id, firstName, lastName, zipCode, cardNumber
+       (nullable), lastFourDigits, createdAt; getMaskedCardNumber()
+     ────────────────────────────────────────
+     File: domain/model/Webhook.java
+     Purpose: @Builder @Getter — id, url, registeredAt
+     ────────────────────────────────────────
+     File: domain/model/PaymentEvent.java
+     Purpose: Immutable record — paymentId, firstName, lastName, zipCode,
+       maskedCardNumber, createdAt. This is the webhook payload value object.
+     ────────────────────────────────────────
+     File: domain/model/WebhookTransactionStatus.java
+     Purpose: enum: PENDING, DELIVERED, FAILED
+     ────────────────────────────────────────
+     File: domain/model/WebhookTransaction.java
+     Purpose: @Builder @Getter — id, webhookId, webhookUrl (denormalized), event
+
+       (PaymentEvent), status, attempts, createdAt, lastAttemptedAt,
+     nextRetryAt.
+       Methods: asDelivered(), asFailed(), withRetryScheduled(LocalDateTime) —
+       return new instances
+     ────────────────────────────────────────
+     File: domain/port/in/CreatePaymentCommand.java
+     Purpose: record: firstName, lastName, zipCode, cardNumber
+     ────────────────────────────────────────
+     File: domain/port/in/CreatePaymentUseCase.java
+     Purpose: Payment createPayment(CreatePaymentCommand)
+     ────────────────────────────────────────
+     File: domain/port/in/ListPaymentsUseCase.java
+     Purpose: List<Payment> listPayments()
+     ────────────────────────────────────────
+     File: domain/port/in/RegisterWebhookCommand.java
+     Purpose: record: url
+     ────────────────────────────────────────
+     File: domain/port/in/RegisterWebhookUseCase.java
+     Purpose: Webhook registerWebhook(RegisterWebhookCommand)
+     ────────────────────────────────────────
+     File: domain/port/in/ProcessPendingWebhooksUseCase.java
+     Purpose: void processPendingWebhooks()
+     ────────────────────────────────────────
+     File: domain/port/out/PaymentRepository.java
+     Purpose: save, findAll
+     ────────────────────────────────────────
+     File: domain/port/out/WebhookRepository.java
+     Purpose: save, findAll
+     ────────────────────────────────────────
+     File: domain/port/out/WebhookTransactionRepository.java
+     Purpose: save(WebhookTransaction), findPendingDue(LocalDateTime),
+       update(WebhookTransaction)
+     ────────────────────────────────────────
+     File: domain/port/out/WebhookNotifier.java
+     Purpose: boolean notify(String url, PaymentEvent event) — true on 2xx,
+     false
+       otherwise
+
+     ---
+     Application layer
+
+     File: application/service/PaymentService.java
+     Purpose: @Transactional createPayment(): save Payment + create one
+       WebhookTransaction(PENDING) per registered webhook atomically. Also
+       implements ListPaymentsUseCase.
+     ────────────────────────────────────────
+     File: application/service/WebhookService.java
+     Purpose: implements RegisterWebhookUseCase
+     ────────────────────────────────────────
+     File: application/service/WebhookDeliveryService.java
+     Purpose: implements ProcessPendingWebhooksUseCase. Loads PENDING
+     transactions,
+       calls webhookNotifier.notify(), updates status/attempts/nextRetryAt via
+       WebhookTransactionRepository.update(). Exponential backoff: 2^attempts * 
+     30s.
+        Max attempts configurable.
+
+     ---
+     Adapter — in (web)
+
+     File: adapter/in/web/dto/CreatePaymentRequest.java
+     Purpose: record: @NotBlank firstName/lastName, @Pattern(\\d{4,10}) zipCode,
+
+       @NotBlank @CreditCardNumber cardNumber
+     ────────────────────────────────────────
+     File: adapter/in/web/dto/CreatePaymentResponse.java
+     Purpose: record: id, firstName, lastName, zipCode, maskedCardNumber,
+     createdAt
+     ────────────────────────────────────────
+     File: adapter/in/web/dto/RegisterWebhookRequest.java
+     Purpose: record: @NotBlank @URL url
+     ────────────────────────────────────────
+     File: adapter/in/web/dto/RegisterWebhookResponse.java
+     Purpose: record: id, url, registeredAt
+     ────────────────────────────────────────
+     File: adapter/in/web/PaymentController.java
+     Purpose: POST /api/payments → 201, GET /api/payments → 200
+     ────────────────────────────────────────
+     File: adapter/in/web/WebhookController.java
+     Purpose: POST /api/webhooks → 201
+     ────────────────────────────────────────
+     File: adapter/in/web/GlobalExceptionHandler.java
+     Purpose: @RestControllerAdvice; MethodArgumentNotValidException → RFC 9457
+       ProblemDetail 400 with field-level error map
+
+     Adapter — in (scheduler)
+
+     ┌───────────────────────────────────┬─────────────────────────────────────┐
+     │               File                │               Purpose               │
+     ├───────────────────────────────────┼─────────────────────────────────────┤
+     │                                   │ @Scheduled(fixedDelayString = "${ap │
+     │ adapter/in/scheduler/WebhookDeliv │ p.webhook.scheduler-delay-ms}") →   │
+     │ eryScheduler.java                 │ calls processPendingWebhooksUseCase │
+     │                                   │ .processPendingWebhooks()           │
+     └───────────────────────────────────┴─────────────────────────────────────┘
+
+     ---
+     Adapter — out (persistence)
+
+     File: adapter/out/persistence/PaymentJpaEntity.java
+     Purpose: @Entity(table="payments") — id, firstName, lastName, zipCode,
+       cardNumber (encrypted), lastFourDigits, createdAt
+     ────────────────────────────────────────
+     File: adapter/out/persistence/WebhookJpaEntity.java
+     Purpose: @Entity(table="webhooks")
+     ────────────────────────────────────────
+     File: adapter/out/persistence/WebhookTransactionJpaEntity.java
+     Purpose: @Entity(table="webhook_transactions") — all fields; payload column
+
+       stores PaymentEvent as JSON string (TEXT)
+     ────────────────────────────────────────
+     File: adapter/out/persistence/PaymentJpaRepository.java
+     Purpose: package-private Spring Data interface
+     ────────────────────────────────────────
+     File: adapter/out/persistence/WebhookJpaRepository.java
+     Purpose: package-private Spring Data interface
+     ────────────────────────────────────────
+     File: adapter/out/persistence/WebhookTransactionJpaRepository.java
+     Purpose: package-private Spring Data interface — custom query:
+       findByStatusAndNextRetryAtLessThanEqual(PENDING, now)
+     ────────────────────────────────────────
+     File: adapter/out/persistence/CardEncryptionService.java
+     Purpose: AES-256-CBC, encrypt-only; key from app.encryption.key; format:
+       base64(iv):base64(ciphertext)
+     ────────────────────────────────────────
+     File: adapter/out/persistence/PaymentPersistenceAdapter.java
+     Purpose: implements PaymentRepository; save: extracts lastFour, encrypts
+     full
+       PAN; load: sets cardNumber=null
+     ────────────────────────────────────────
+     File: adapter/out/persistence/WebhookPersistenceAdapter.java
+     Purpose: implements WebhookRepository
+     ────────────────────────────────────────
+     File: adapter/out/persistence/WebhookTransactionPersistenceAdapter.java
+     Purpose: implements WebhookTransactionRepository; serializes/deserializes
+       PaymentEvent ↔ JSON string using Jackson ObjectMapper
+
+     Adapter — out (http)
+
+     File: adapter/out/http/WebhookHttpAdapter.java
+     Purpose: implements WebhookNotifier; single POST attempt via RestClient;
+       returns true on 2xx, false otherwise; logs outcome
+
+     ---
+     Config
+
+     ┌───────────────────────┬──────────────────────────────────────────────────
+     ┐
+     │         File          │                     Purpose
+     │
+     ├───────────────────────┼──────────────────────────────────────────────────
+     ┤
+     │ config/AppConfig.java │ @EnableAsync, @EnableScheduling, RestClient
+     │
+     │                       │ bean, ObjectMapper bean (if not auto-configured)
+     │
+     └───────────────────────┴──────────────────────────────────────────────────
+     ┘
+
+     ---
+     Unit Tests
+
+     Test Class: application/service/PaymentServiceTest.java
+     Scope: createPayment: saves payment + creates WebhookTransaction per
+     webhook
+       atomically; listPayments delegates to repo. Mockito mocks for all ports.
+     ────────────────────────────────────────
+     Test Class: application/service/WebhookDeliveryServiceTest.java
+     Scope: PENDING tx delivered → status DELIVERED; failure under max attempts
+     →
+       status stays PENDING with updated nextRetryAt; failure at max attempts →
+       FAILED.
+     ────────────────────────────────────────
+     Test Class: application/service/WebhookServiceTest.java
+     Scope: registerWebhook builds correct Webhook, delegates to repo.
+     ────────────────────────────────────────
+     Test Class: adapter/out/persistence/CardEncryptionServiceTest.java
+     Scope: encrypt produces iv:ciphertext format; two encryptions of same value
+
+       yield different ciphertexts (IV randomness).
+     ────────────────────────────────────────
+     Test Class: adapter/in/web/PaymentControllerTest.java
+     Scope: @WebMvcTest — valid → 201; missing field → 400 with error map;
+     invalid
+       card → 400.
+     ────────────────────────────────────────
+     Test Class: adapter/in/web/WebhookControllerTest.java
+     Scope: @WebMvcTest — valid URL → 201; blank/bad URL → 400.
+
+     ---
+     Key Design Decisions
+
+     1. Outbox atomicity — PaymentService.createPayment() is @Transactional.
+     Payment row + webhook_transaction rows are written together. If anything
+     fails, both roll back. The scheduler only sees committed records,
+     eliminating dual-write risk.
+     2. Encrypt-only — CardEncryptionService has no decrypt(). lastFourDigits is
+      the only display data loaded from DB. This limits blast radius if the DB
+     is compromised.
+     3. WebhookTransaction.webhookUrl is denormalized — stored at creation time
+     so delivery still works even if the webhook registration is later changed
+     or deleted.
+     4. Backoff formula — nextRetryAt = now + 2^attempts * 30s (30s, 60s, 120s,
+     240s). After 5 failures → FAILED (no further delivery attempts).
+     5. Single-instance assumption — no SELECT FOR UPDATE SKIP LOCKED guard
+     against concurrent schedulers. Acceptable for this scope; noted as a
+     limitation.
+
+     ---
+     Verification
+
+     # Start app (auto-starts Postgres via Docker Compose)
+     ./gradlew bootRun
+
+     # Register a webhook
+     curl -X POST http://localhost:8080/api/webhooks \
+       -H "Content-Type: application/json" \
+       -d '{"url":"https://webhook.site/<your-id>"}'
+
+     # Create a payment (4111111111111111 passes Luhn)
+     curl -X POST http://localhost:8080/api/payments \
+       -H "Content-Type: application/json" \
+       -d '{"firstName":"John","lastName":"Doe","zipCode":"90210","cardNumber":"
+     4111111111111111"}'
+
+     # List payments — masked card, no raw PAN
+     curl http://localhost:8080/api/payments
+
+     # Validation error example
+     curl -X POST http://localhost:8080/api/payments \
+       -H "Content-Type: application/json" \
+       -d '{"firstName":"","zipCode":"abc","cardNumber":"1234"}'
+
+     # Check outbox table directly (Postgres)
+     # webhook_transactions should show DELIVERED status after ~30s
+
+     # Swagger UI
+     open http://localhost:8080/swagger-ui.html
+
+     # Run all tests
+     ./gradlew test
+
+● Plan approved. Let me build everything now. Starting with the dependency
+  update and encryption key, then working outward from domain → application →
+  adapters → tests.
+
+● Bash(openssl rand -base64 32)
+  ⎿  /E1TZD97KNkY2DDrGI/A3wUePbaAgld3oM3hjVWqKok=
+
+● Update(build.gradle.kts)
+  ⎿  Added 1 line
+      19  
+      20  dependencies {
+      21    implementation("org.springframework.boot:spring-boot-starter-
+          data-jpa")
+      22 +  implementation("org.springframework.boot:spring-boot-starter-
+         +validation")                                                   
+      23    implementation("org.springframework.boot:spring-boot-starter-
+          webmvc")
+      24    implementation("org.springdoc:springdoc-openapi-starter-webmv
+          c-ui:3.0.2")
+      25    compileOnly("org.projectlombok:lombok")
+
+● Write(src/main/resources/application.properties)
+  ⎿  Added 7 lines
+      1  spring.application.name=payment-application
+      2 +spring.jpa.hibernate.ddl-auto=update                            
+      3 +spring.jpa.open-in-view=false                                   
+      4 +                                                                
+      5 +# Generate a new key with: openssl rand -base64 32              
+      6 +app.encryption.key=/E1TZD97KNkY2DDrGI/A3wUePbaAgld3oM3hjVWqKok= 
+      7 +app.webhook.max-attempts=5                                      
+      8 +app.webhook.scheduler-delay-ms=30000                            
+
+● Now the domain layer — pure Java, no framework imports:
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/model/Payment.java)
+  ⎿  Wrote 24 lines to
+     src/main/java/dev/brenzo/payment_application/domain/model/Payment.java
+       1 package dev.brenzo.payment_application.domain.model;
+       2 
+       3 import lombok.Builder;
+       4 import lombok.Getter;
+       5 
+       6 import java.time.LocalDateTime;
+       7 import java.util.UUID;
+       8 
+       9 @Builder
+      10 @Getter
+     … +14 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/model/Webhook.java)
+  ⎿  Wrote 16 lines to
+     src/main/java/dev/brenzo/payment_application/domain/model/Webhook.java
+       1 package dev.brenzo.payment_application.domain.model;
+       2 
+       3 import lombok.Builder;
+       4 import lombok.Getter;
+       5 
+       6 import java.time.LocalDateTime;
+       7 import java.util.UUID;
+       8 
+       9 @Builder
+      10 @Getter
+     … +6 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/model/PaymentEvent.j
+       ava)
+  ⎿  Wrote 13 lines to src/main/java/dev/brenzo/payment_application/domain/
+     model/PaymentEvent.java
+       1 package dev.brenzo.payment_application.domain.model;
+       2 
+       3 import java.time.LocalDateTime;
+       4 import java.util.UUID;
+       5 
+       6 public record PaymentEvent(
+       7         UUID paymentId,
+       8         String firstName,
+       9         String lastName,
+      10         String zipCode,
+     … +3 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/model/WebhookTransac
+       tionStatus.java)
+  ⎿  Wrote 5 lines to src/main/java/dev/brenzo/payment_application/domain/m
+     odel/WebhookTransactionStatus.java
+      1 package dev.brenzo.payment_application.domain.model;
+      2 
+      3 public enum WebhookTransactionStatus {
+      4     PENDING, DELIVERED, FAILED
+      5 }
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/model/WebhookTransac
+       tion.java)
+  ⎿  Wrote 64 lines to src/main/java/dev/brenzo/payment_application/domain/
+     model/WebhookTransaction.java
+       1 package dev.brenzo.payment_application.domain.model;
+       2 
+       3 import lombok.Builder;
+       4 import lombok.Getter;
+       5 
+       6 import java.time.LocalDateTime;
+       7 import java.util.UUID;
+       8 
+       9 @Builder
+      10 @Getter
+     … +55 lines (ctrl+o to expand)
+
+● Now the ports:
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/in/CreatePaymen
+       tCommand.java)
+  ⎿  Wrote 8 lines to src/main/java/dev/brenzo/payment_application/domain/p
+     ort/in/CreatePaymentCommand.java
+      1 package dev.brenzo.payment_application.domain.port.in;
+      2 
+      3 public record CreatePaymentCommand(
+      4         String firstName,
+      5         String lastName,
+      6         String zipCode,
+      7         String cardNumber
+      8 ) {}
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/in/CreatePaymen
+       tUseCase.java)
+  ⎿  Wrote 7 lines to src/main/java/dev/brenzo/payment_application/domain/p
+     ort/in/CreatePaymentUseCase.java
+      1 package dev.brenzo.payment_application.domain.port.in;
+      2 
+      3 import dev.brenzo.payment_application.domain.model.Payment;
+      4 
+      5 public interface CreatePaymentUseCase {
+      6     Payment createPayment(CreatePaymentCommand command);
+      7 }
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/in/ListPayments
+       UseCase.java)
+  ⎿  Wrote 9 lines to src/main/java/dev/brenzo/payment_application/domain/p
+     ort/in/ListPaymentsUseCase.java
+      1 package dev.brenzo.payment_application.domain.port.in;
+      2 
+      3 import dev.brenzo.payment_application.domain.model.Payment;
+      4 
+      5 import java.util.List;
+      6 
+      7 public interface ListPaymentsUseCase {
+      8     List<Payment> listPayments();
+      9 }
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/in/RegisterWebh
+       ookCommand.java)
+  ⎿  Wrote 3 lines to src/main/java/dev/brenzo/payment_application/domain/p
+     ort/in/RegisterWebhookCommand.java
+      1 package dev.brenzo.payment_application.domain.port.in;
+      2 
+      3 public record RegisterWebhookCommand(String url) {}
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/in/RegisterWebh
+       ookUseCase.java)
+  ⎿  Wrote 7 lines to src/main/java/dev/brenzo/payment_application/domain/p
+     ort/in/RegisterWebhookUseCase.java
+      1 package dev.brenzo.payment_application.domain.port.in;
+      2 
+      3 import dev.brenzo.payment_application.domain.model.Webhook;
+      4 
+      5 public interface RegisterWebhookUseCase {
+      6     Webhook registerWebhook(RegisterWebhookCommand command);
+      7 }
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/in/ProcessPendi
+       ngWebhooksUseCase.java)
+  ⎿  Wrote 5 lines to src/main/java/dev/brenzo/payment_application/domain/p
+     ort/in/ProcessPendingWebhooksUseCase.java
+      1 package dev.brenzo.payment_application.domain.port.in;
+      2 
+      3 public interface ProcessPendingWebhooksUseCase {
+      4     void processPendingWebhooks();
+      5 }
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/out/PaymentRepo
+       sitory.java)
+  ⎿  Wrote 10 lines to src/main/java/dev/brenzo/payment_application/domain/
+     port/out/PaymentRepository.java
+       1 package dev.brenzo.payment_application.domain.port.out;
+       2 
+       3 import dev.brenzo.payment_application.domain.model.Payment;
+       4 
+       5 import java.util.List;
+       6 
+       7 public interface PaymentRepository {
+       8     Payment save(Payment payment);
+       9     List<Payment> findAll();
+      10 }
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/out/WebhookRepo
+       sitory.java)
+  ⎿  Wrote 10 lines to src/main/java/dev/brenzo/payment_application/domain/
+     port/out/WebhookRepository.java
+       1 package dev.brenzo.payment_application.domain.port.out;
+       2 
+       3 import dev.brenzo.payment_application.domain.model.Webhook;
+       4 
+       5 import java.util.List;
+       6 
+       7 public interface WebhookRepository {
+       8     Webhook save(Webhook webhook);
+       9     List<Webhook> findAll();
+      10 }
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/out/WebhookTran
+       sactionRepository.java)
+  ⎿  Wrote 12 lines to src/main/java/dev/brenzo/payment_application/domain/
+     port/out/WebhookTransactionRepository.java
+       2 package dev.brenzo.payment_application.domain.port.out;
+       3 import dev.brenzo.payment_application.domain.model.WebhookTransa
+         ction;
+       4 
+       5 import java.time.LocalDateTime;
+       6 import java.util.List;
+       7 
+       8 public interface WebhookTransactionRepository {
+       9     void save(WebhookTransaction transaction);
+      10     List<WebhookTransaction> findPendingDue(LocalDateTime now);
+     … +3 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/domain/port/out/WebhookNoti
+       fier.java)  ⎿  Wrote 7 lines to src/main/java/dev/brenzo/payment_application/domain/p
+     ort/out/WebhookNotifier.java
+      1 package dev.brenzo.payment_application.domain.port.out;
+      2 
+      3 import dev.brenzo.payment_application.domain.model.PaymentEvent;
+      4 
+      5 public interface WebhookNotifier {
+      6     boolean notify(String url, PaymentEvent event);
+      7 }
+
+● Now the application services:
+
+● Write(src/main/java/dev/brenzo/payment_application/application/service/Payment
+       Service.java)
+  ⎿  Wrote 79 lines to src/main/java/dev/brenzo/payment_application/applica
+     tion/service/PaymentService.java
+       2 package dev.brenzo.payment_application.application.service;
+       3 import dev.brenzo.payment_application.domain.model.Payment;
+       5 import dev.brenzo.payment_application.domain.model.Webhook;vent;
+       6 import dev.brenzo.payment_application.domain.model.WebhookTransa
+       7 import dev.brenzo.payment_application.domain.model.WebhookTransa
+         ctionStatus;
+         ntCommand;.brenzo.payment_application.domain.port.in.CreatePayme
+       9 import dev.brenzo.payment_application.domain.port.in.CreatePayme
+      10 import dev.brenzo.payment_application.domain.port.in.ListPayment
+         sUseCase;
+     … +81 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/application/service/Webhook
+       Service.java)
+  ⎿  Wrote 28 lines to src/main/java/dev/brenzo/payment_application/applica
+     tion/service/WebhookService.java
+       2 package dev.brenzo.payment_application.application.service;
+       3 import dev.brenzo.payment_application.domain.model.Webhook;
+       4 import dev.brenzo.payment_application.domain.port.in.RegisterWeb
+       5 import dev.brenzo.payment_application.domain.port.in.RegisterWeb
+         hookUseCase;
+       6 import dev.brenzo.payment_application.domain.port.out.WebhookRep
+       7 import lombok.RequiredArgsConstructor;
+       8 import org.springframework.stereotype.Service;
+       9 
+      10 import java.time.LocalDateTime;
+     … +21 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/application/service/Webhook
+       DeliveryService.java)
+  ⎿  Wrote 46 lines to src/main/java/dev/brenzo/payment_application/applica
+     tion/service/WebhookDeliveryService.java
+       2 package dev.brenzo.payment_application.application.service;
+       3 import dev.brenzo.payment_application.domain.model.WebhookTransa
+       4 import dev.brenzo.payment_application.domain.port.in.ProcessPend
+         ingWebhooksUseCase;
+       5 import dev.brenzo.payment_application.domain.port.out.WebhookNot
+       6 import dev.brenzo.payment_application.domain.port.out.WebhookTra
+         nsactionRepository;
+       8 import lombok.extern.slf4j.Slf4j;ctor;
+       9 import org.springframework.beans.factory.annotation.Value;
+      10 import org.springframework.stereotype.Service;
+     … +50 lines (ctrl+o to expand)
+
+● Now the web adapter — DTOs, controllers, exception handler:
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/in/web/dto/CreatePa
+       ymentRequest.java)
+  ⎿  Wrote 22 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /in/web/dto/CreatePaymentRequest.java
+       1 package dev.brenzo.payment_application.adapter.in.web.dto;
+       2 
+       3 import jakarta.validation.constraints.NotBlank;
+       4 import jakarta.validation.constraints.Pattern;
+       5 import org.hibernate.validator.constraints.CreditCardNumber;
+       6 
+       7 public record CreatePaymentRequest(
+       8 
+       9         @NotBlank(message = "First name is required")
+      10         String firstName,
+     … +13 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/in/web/dto/CreatePa
+       ymentResponse.java)
+  ⎿  Wrote 13 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /in/web/dto/CreatePaymentResponse.java
+       1 package dev.brenzo.payment_application.adapter.in.web.dto;
+       2 
+       3 import java.time.LocalDateTime;
+       4 import java.util.UUID;
+       5 
+       6 public record CreatePaymentResponse(
+       7         UUID id,
+       8         String firstName,
+       9         String lastName,
+      10         String zipCode,
+     … +3 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/in/web/dto/Register
+       WebhookRequest.java)
+  ⎿  Wrote 11 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /in/web/dto/RegisterWebhookRequest.java
+       1 package dev.brenzo.payment_application.adapter.in.web.dto;
+       2 
+       3 import jakarta.validation.constraints.NotBlank;
+       4 import org.hibernate.validator.constraints.URL;
+       5 
+       6 public record RegisterWebhookRequest(
+       7 
+       8         @NotBlank(message = "URL is required")
+       9         @URL(message = "Must be a valid URL")
+      10         String url
+     … +1 line (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/in/web/dto/Register
+       WebhookResponse.java)
+  ⎿  Wrote 10 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /in/web/dto/RegisterWebhookResponse.java
+       1 package dev.brenzo.payment_application.adapter.in.web.dto;
+       2 
+       3 import java.time.LocalDateTime;
+       4 import java.util.UUID;
+       5 
+       6 public record RegisterWebhookResponse(
+       7         UUID id,
+       8         String url,
+       9         LocalDateTime registeredAt
+      10 ) {}
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/in/web/PaymentContr
+       oller.java)
+  ⎿  Wrote 58 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /in/web/PaymentController.java
+       2 package dev.brenzo.payment_application.adapter.in.web;
+       3 import dev.brenzo.payment_application.adapter.in.web.dto.CreateP
+       4 import dev.brenzo.payment_application.adapter.in.web.dto.CreateP
+         aymentResponse;
+       6 import dev.brenzo.payment_application.domain.port.in.CreatePayme
+         ntCommand;
+         ntUseCase;.brenzo.payment_application.domain.port.in.CreatePayme
+       8 import dev.brenzo.payment_application.domain.port.in.ListPayment
+       9 import jakarta.validation.Valid;
+      10 import lombok.RequiredArgsConstructor;
+     … +55 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/in/web/WebhookContr
+       oller.java)
+  ⎿  Wrote 30 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /in/web/WebhookController.java
+       2 package dev.brenzo.payment_application.adapter.in.web;
+       3 import dev.brenzo.payment_application.adapter.in.web.dto.Registe
+       4 import dev.brenzo.payment_application.adapter.in.web.dto.Registe
+         rWebhookResponse;
+       5 import dev.brenzo.payment_application.domain.model.Webhook;
+         hookCommand;renzo.payment_application.domain.port.in.RegisterWeb
+       7 import dev.brenzo.payment_application.domain.port.in.RegisterWeb
+       8 import jakarta.validation.Valid;
+       9 import lombok.RequiredArgsConstructor;
+      10 import org.springframework.http.HttpStatus;
+     … +27 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/in/web/GlobalExcept
+       ionHandler.java)
+  ⎿  Wrote 29 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /in/web/GlobalExceptionHandler.java
+       2 package dev.brenzo.payment_application.adapter.in.web;
+       3 import org.springframework.http.HttpStatus;
+       4 import org.springframework.http.ProblemDetail;
+       5 import org.springframework.validation.FieldError;
+       6 import org.springframework.web.bind.MethodArgumentNotValidExcept
+       7 import org.springframework.web.bind.annotation.ExceptionHandler;
+       8 import org.springframework.web.bind.annotation.RestControllerAdv
+         ice;
+       9 
+      10 import java.util.Map;
+     … +22 lines (ctrl+o to expand)
+
+● Scheduler adapter:
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/in/scheduler/Webhoo
+       kDeliveryScheduler.java)
+  ⎿  Wrote 18 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /in/scheduler/WebhookDeliveryScheduler.java
+       2 package dev.brenzo.payment_application.adapter.in.scheduler;
+       3 import dev.brenzo.payment_application.domain.port.in.ProcessPend
+         ingWebhooksUseCase;
+       4 import lombok.RequiredArgsConstructor;
+       5 import org.springframework.scheduling.annotation.Scheduled;
+       6 import org.springframework.stereotype.Component;
+       7 
+       8 @Component
+       9 @RequiredArgsConstructor
+      10 public class WebhookDeliveryScheduler {
+     … +11 lines (ctrl+o to expand)
+
+● Now the persistence adapters:
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Pay
+       mentJpaEntity.java)
+  ⎿  Wrote 45 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /out/persistence/PaymentJpaEntity.java
+       1 package dev.brenzo.payment_application.adapter.out.persistence;
+       2 
+       3 import jakarta.persistence.Column;
+       4 import jakarta.persistence.Entity;
+       5 import jakarta.persistence.Id;
+       6 import jakarta.persistence.Table;
+       7 import lombok.AllArgsConstructor;
+       8 import lombok.Builder;
+       9 import lombok.Getter;
+      10 import lombok.NoArgsConstructor;
+     … +35 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Web
+       hookJpaEntity.java)
+  ⎿  Wrote 33 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /out/persistence/WebhookJpaEntity.java
+       1 package dev.brenzo.payment_application.adapter.out.persistence;
+       2 
+       3 import jakarta.persistence.Column;
+       4 import jakarta.persistence.Entity;
+       5 import jakarta.persistence.Id;
+       6 import jakarta.persistence.Table;
+       7 import lombok.AllArgsConstructor;
+       8 import lombok.Builder;
+       9 import lombok.Getter;
+      10 import lombok.NoArgsConstructor;
+     … +23 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Web
+       hookTransactionJpaEntity.java)
+  ⎿  Wrote 55 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /out/persistence/WebhookTransactionJpaEntity.java
+       2 package dev.brenzo.payment_application.adapter.out.persistence;
+       3 import dev.brenzo.payment_application.domain.model.WebhookTransa
+         ctionStatus;
+       4 import jakarta.persistence.Column;
+       5 import jakarta.persistence.Entity;
+       6 import jakarta.persistence.EnumType;
+       7 import jakarta.persistence.Enumerated;
+       8 import jakarta.persistence.Id;
+       9 import jakarta.persistence.Table;
+      10 import lombok.AllArgsConstructor;
+     … +47 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Pay
+       mentJpaRepository.java)
+  ⎿  Wrote 7 lines to src/main/java/dev/brenzo/payment_application/adapter/
+     out/persistence/PaymentJpaRepository.java
+      1 package dev.brenzo.payment_application.adapter.out.persistence;
+      2 
+      3 import org.springframework.data.jpa.repository.JpaRepository;
+      4 
+      5 import java.util.UUID;
+      6 
+      7 interface PaymentJpaRepository extends JpaRepository<PaymentJpaEn
+        tity, UUID> {}
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Web
+       hookJpaRepository.java)
+  ⎿  Wrote 7 lines to src/main/java/dev/brenzo/payment_application/adapter/
+     out/persistence/WebhookJpaRepository.java
+      1 package dev.brenzo.payment_application.adapter.out.persistence;
+      2 
+      3 import org.springframework.data.jpa.repository.JpaRepository;
+      4 
+      5 import java.util.UUID;
+      6 
+      7 interface WebhookJpaRepository extends JpaRepository<WebhookJpaEn
+        tity, UUID> {}
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Web
+       hookTransactionJpaRepository.java)
+  ⎿  Wrote 16 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /out/persistence/WebhookTransactionJpaRepository.java
+       2 package dev.brenzo.payment_application.adapter.out.persistence;
+       3 import dev.brenzo.payment_application.domain.model.WebhookTransa
+         ctionStatus;
+       4 import org.springframework.data.jpa.repository.JpaRepository;
+       5 
+       7 import java.util.List;DateTime;
+       8 import java.util.UUID;
+       9 
+      10 interface WebhookTransactionJpaRepository extends JpaRepository<
+         WebhookTransactionJpaEntity, UUID> {
+     … +9 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Car
+       dEncryptionService.java)  ⎿  Wrote 38 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /out/persistence/CardEncryptionService.java
+       1 package dev.brenzo.payment_application.adapter.out.persistence;
+       2 
+       3 import org.springframework.beans.factory.annotation.Value;
+       4 import org.springframework.stereotype.Component;
+       5 
+       6 import javax.crypto.Cipher;
+       7 import javax.crypto.spec.IvParameterSpec;
+       8 import javax.crypto.spec.SecretKeySpec;
+       9 import java.security.SecureRandom;
+      10 import java.util.Base64;
+     … +32 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Pay
+       mentPersistenceAdapter.java)
+  ⎿  Wrote 49 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /out/persistence/PaymentPersistenceAdapter.java
+       2 package dev.brenzo.payment_application.adapter.out.persistence;
+       3 import dev.brenzo.payment_application.domain.model.Payment;
+       4 import dev.brenzo.payment_application.domain.port.out.PaymentRep
+         ository;
+       5 import lombok.RequiredArgsConstructor;
+       6 import org.springframework.stereotype.Component;
+       7 
+       8 import java.util.List;
+       9 
+      10 @Component
+     … +41 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Web
+       hookPersistenceAdapter.java)
+  ⎿  Wrote 41 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /out/persistence/WebhookPersistenceAdapter.java
+       2 package dev.brenzo.payment_application.adapter.out.persistence;
+       3 import dev.brenzo.payment_application.domain.model.Webhook;
+       4 import dev.brenzo.payment_application.domain.port.out.WebhookRep
+         ository;
+       5 import lombok.RequiredArgsConstructor;
+       6 import org.springframework.stereotype.Component;
+       7 
+       8 import java.util.List;
+       9 
+      10 @Component
+     … +32 lines (ctrl+o to expand)
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/persistence/Web
+       hookTransactionPersistenceAdapter.java)
+  ⎿  Wrote 84 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /out/persistence/WebhookTransactionPersistenceAdapter.java
+       2 package dev.brenzo.payment_application.adapter.out.persistence;
+       3 import com.fasterxml.jackson.core.JsonProcessingException;
+       4 import com.fasterxml.jackson.databind.ObjectMapper;
+       6 import dev.brenzo.payment_application.domain.model.WebhookTransa
+         ction;
+       7 import dev.brenzo.payment_application.domain.model.WebhookTransa
+       8 import dev.brenzo.payment_application.domain.port.out.WebhookTra
+         nsactionRepository;
+       9 import lombok.RequiredArgsConstructor;
+      10 import org.springframework.stereotype.Component;
+     … +84 lines (ctrl+o to expand)
+
+● HTTP outbound adapter:
+
+● Write(src/main/java/dev/brenzo/payment_application/adapter/out/http/WebhookHtt
+       pAdapter.java)
+  ⎿  Wrote 31 lines to src/main/java/dev/brenzo/payment_application/adapter
+     /out/http/WebhookHttpAdapter.java
+       2 package dev.brenzo.payment_application.adapter.out.http;
+       3 import dev.brenzo.payment_application.domain.model.PaymentEvent;
+       4 import dev.brenzo.payment_application.domain.port.out.WebhookNot
+         ifier;
+       5 import lombok.RequiredArgsConstructor;
+       6 import lombok.extern.slf4j.Slf4j;
+       7 import org.springframework.stereotype.Component;
+       8 import org.springframework.web.client.RestClient;
+       9 
+      10 @Slf4j
+     … +23 lines (ctrl+o to expand)
+
+● Config:
+
+● Write(src/main/java/dev/brenzo/payment_application/config/AppConfig.java)
+  ⎿  Wrote 16 lines to
+     src/main/java/dev/brenzo/payment_application/config/AppConfig.java
+       2 package dev.brenzo.payment_application.config;
+       3 import org.springframework.context.annotation.Bean;
+       4 import org.springframework.context.annotation.Configuration;
+       5 import org.springframework.scheduling.annotation.EnableSchedulin
+         g;
+       6 import org.springframework.web.client.RestClient;
+       7 
+       8 @Configuration
+       9 @EnableScheduling
+      10 public class AppConfig {
+     … +6 lines (ctrl+o to expand)
+
+● Now the unit tests:
+
+● Write(src/test/java/dev/brenzo/payment_application/application/service/Payment
+       ServiceTest.java)
+  ⎿  Wrote 103 lines to src/test/java/dev/brenzo/payment_application/applic
+     ation/service/PaymentServiceTest.java
+       2 package dev.brenzo.payment_application.application.service;
+       4 import dev.brenzo.payment_application.domain.model.Webhook;
+       5 import dev.brenzo.payment_application.domain.model.WebhookTransa
+       6 import dev.brenzo.payment_application.domain.model.WebhookTransa
+         ctionStatus;
+         ntCommand;.brenzo.payment_application.domain.port.in.CreatePayme
+         ository;ev.brenzo.payment_application.domain.port.out.PaymentRep
+       9 import dev.brenzo.payment_application.domain.port.out.WebhookRep
+      10 import dev.brenzo.payment_application.domain.port.out.WebhookTra
+         nsactionRepository;
+     … +118 lines (ctrl+o to expand)
+
+● Write(src/test/java/dev/brenzo/payment_application/application/service/Webhook
+       ServiceTest.java)
+  ⎿  Wrote 42 lines to src/test/java/dev/brenzo/payment_application/applica
+     tion/service/WebhookServiceTest.java
+       2 package dev.brenzo.payment_application.application.service;
+       3 import dev.brenzo.payment_application.domain.model.Webhook;
+       4 import dev.brenzo.payment_application.domain.port.in.RegisterWeb
+         hookCommand;
+       5 import dev.brenzo.payment_application.domain.port.out.WebhookRep
+       6 import org.junit.jupiter.api.Test;
+       7 import org.junit.jupiter.api.extension.ExtendWith;
+       8 import org.mockito.ArgumentCaptor;
+       9 import org.mockito.InjectMocks;
+      10 import org.mockito.Mock;
+     … +38 lines (ctrl+o to expand)
+
+● Write(src/test/java/dev/brenzo/payment_application/application/service/Webhook
+       DeliveryServiceTest.java)
+  ⎿  Wrote 100 lines to src/test/java/dev/brenzo/payment_application/applic
+     ation/service/WebhookDeliveryServiceTest.java
+       2 package dev.brenzo.payment_application.application.service;
+       3 import dev.brenzo.payment_application.domain.model.PaymentEvent;
+         ction; dev.brenzo.payment_application.domain.model.WebhookTransa
+       5 import dev.brenzo.payment_application.domain.model.WebhookTransa
+         ctionStatus;
+         ifier; dev.brenzo.payment_application.domain.port.out.WebhookNot
+       7 import dev.brenzo.payment_application.domain.port.out.WebhookTra
+       8 import org.junit.jupiter.api.BeforeEach;
+       9 import org.junit.jupiter.api.Test;
+      10 import org.junit.jupiter.api.extension.ExtendWith;
+     … +113 lines (ctrl+o to expand)
+
+● Write(src/test/java/dev/brenzo/payment_application/adapter/out/persistence/Car
+       dEncryptionServiceTest.java)
+  ⎿  Wrote 44 lines to src/test/java/dev/brenzo/payment_application/adapter
+     /out/persistence/CardEncryptionServiceTest.java
+       2 package dev.brenzo.payment_application.adapter.out.persistence;
+       3 import org.junit.jupiter.api.Test;
+       4 
+       5 import java.util.Base64;
+       6 
+       7 import static org.assertj.core.api.Assertions.assertThat;
+       8 import static org.assertj.core.api.Assertions.assertThatThrownBy
+         ;
+       9 
+      10 class CardEncryptionServiceTest {
+     … +38 lines (ctrl+o to expand)
+
+● Write(src/test/java/dev/brenzo/payment_application/adapter/in/web/PaymentContr
+       ollerTest.java)
+  ⎿  Wrote 109 lines to src/test/java/dev/brenzo/payment_application/adapte
+     r/in/web/PaymentControllerTest.java
+       2 package dev.brenzo.payment_application.adapter.in.web;
+       3 import com.fasterxml.jackson.databind.ObjectMapper;
+         aymentRequest;nzo.payment_application.adapter.in.web.dto.CreateP
+       5 import dev.brenzo.payment_application.domain.model.Payment;
+       6 import dev.brenzo.payment_application.domain.port.in.CreatePayme
+       7 import dev.brenzo.payment_application.domain.port.in.ListPayment
+         sUseCase;
+       9 import org.springframework.beans.factory.annotation.Autowired;
+      10 import org.springframework.boot.test.autoconfigure.web.servlet.W
+         ebMvcTest;
+     … +123 lines (ctrl+o to expand)
+
+● Write(src/test/java/dev/brenzo/payment_application/adapter/in/web/WebhookContr
+       ollerTest.java)
+  ⎿  Wrote 70 lines to src/test/java/dev/brenzo/payment_application/adapter
+     /in/web/WebhookControllerTest.java
+       2 package dev.brenzo.payment_application.adapter.in.web;
+       3 import com.fasterxml.jackson.databind.ObjectMapper;
+       4 import dev.brenzo.payment_application.adapter.in.web.dto.Registe
+       5 import dev.brenzo.payment_application.domain.model.Webhook;
+       6 import dev.brenzo.payment_application.domain.port.in.RegisterWeb
+         hookUseCase;
+       8 import org.springframework.beans.factory.annotation.Autowired;
+       9 import org.springframework.boot.test.autoconfigure.web.servlet.W
+         ebMvcTest;
+      10 import org.springframework.http.MediaType;
+     … +74 lines (ctrl+o to expand)
+
+● Now let's run the tests to verify everything compiles and passes:
+
+● Bash(./gradlew test --info 2>&1 | tail -80)
+  ⎿  The input changes require a full rebuild for incremental task ':compil
+     eJava'.
+     Compilation mode: in-process compilation
+     … +67 lines (ctrl+o to expand)
+
+● The spring-boot-starter-webmvc-test in Boot 4 doesn't transitively include the
+   autoconfigure test module. Let me add it.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(build.gradle.kts)
+  ⎿  Added 1 line
+      28    annotationProcessor("org.projectlombok:lombok")
+      29    testImplementation("org.springframework.boot:spring-boot-star
+          ter-data-jpa-test")
+      30    testImplementation("org.springframework.boot:spring-boot-star
+          ter-webmvc-test")
+      31 +  testImplementation("org.springframework.boot:spring-boot-test
+         +-autoconfigure")                                               
+      32    testCompileOnly("org.projectlombok:lombok")
+      33    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+      34    testAnnotationProcessor("org.projectlombok:lombok")
+
+● Bash(./gradlew test 2>&1 | tail -60)
+  ⎿  > Task :compileJava UP-TO-DATE
+     > Task :processResources UP-TO-DATE
+     > Task :classes UP-TO-DATE
+     … +43 lines (ctrl+o to expand)
+
+● Let me investigate what's actually on the test classpath in Boot 4.
+
+● Bash(./gradlew dependencies --configuration testRuntimeClasspath 2>&1 | grep
+      -E "(autoconfigure|test-auto|WebMvcTest)" | head -20)
+  ⎿  |    |    +--- org.springframework.boot:spring-boot-autoconfigure:4.0.
+     6
+     |    |    |    +--- org.springframework.boot:spring-boot-autoconfigure
+     … +13 lines (ctrl+o to expand)
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(jar tf /home/brenzo/.gradle/caches/modules-2/files-2.1/org.springframewor
+      k.boot/spring-boot-test-autoconfigure/4.0.6/268908eb95b5483157544d79155ef7
+      e0dd521798/sp…)
+  ⎿  (No output)
+
+● Bash(jar tf /home/brenzo/.gradle/caches/modules-2/files-2.1/org.springframewor
+      k.boot/spring-boot-test-autoconfigure/4.0.6/268908eb95b5483157544d79155ef7
+      e0dd521798/sp…)
+  ⎿  (No output)
+
+● Bash(jar tf /home/brenzo/.gradle/caches/modules-2/files-2.1/org.springframewor
+      k.boot/spring-boot-test-autoconfigure/4.0.6/268908eb95b5483157544d79155ef7
+      e0dd521798/sp…)
+  ⎿  META-INF/
+     META-INF/MANIFEST.MF
+     META-INF/LICENSE.txt
+     … +27 lines (ctrl+o to expand)
+
+● Bash(jar tf /home/brenzo/.gradle/caches/modules-2/files-2.1/org.springframewor
+      k.boot/spring-boot-test-autoconfigure/4.0.6/268908eb95b5483157544d79155ef7
+      e0dd521798/sp…)
+  ⎿  No matches found
+
+● Bash(jar tf /home/brenzo/.gradle/caches/modules-2/files-2.1/org.springframewor
+      k.boot/spring-boot-test-autoconfigure/4.0.6/268908eb95b5483157544d79155ef7
+      e0dd521798/sp…)
+  ⎿  No matches found
+
+  Searched for 1 pattern (ctrl+o to expand)
